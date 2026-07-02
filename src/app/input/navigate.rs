@@ -307,6 +307,16 @@ impl App {
                 leave_navigate_mode(&mut self.state);
             }
             NavigateAction::EnterResizeMode => self.state.mode = Mode::Resize,
+            NavigateAction::ResizePaneLeft => {
+                self.resize_pane_direction_via_api(NavDirection::Left)
+            }
+            NavigateAction::ResizePaneDown => {
+                self.resize_pane_direction_via_api(NavDirection::Down)
+            }
+            NavigateAction::ResizePaneUp => self.resize_pane_direction_via_api(NavDirection::Up),
+            NavigateAction::ResizePaneRight => {
+                self.resize_pane_direction_via_api(NavDirection::Right)
+            }
             NavigateAction::ToggleSidebar => {
                 self.state.sidebar_collapsed = !self.state.sidebar_collapsed;
                 leave_navigate_mode(&mut self.state);
@@ -436,6 +446,17 @@ impl App {
                     direction: api_pane_direction(direction),
                 },
             ),
+        );
+    }
+
+    pub(crate) fn resize_pane_direction_via_api(&mut self, direction: NavDirection) {
+        self.dispatch_runtime_mutation(
+            "tui.pane.resize",
+            crate::api::schema::Method::PaneResize(crate::api::schema::PaneResizeParams {
+                pane_id: None,
+                direction: api_pane_direction(direction),
+                amount: None,
+            }),
         );
     }
 
@@ -1233,6 +1254,10 @@ pub(crate) enum NavigateAction {
     CopyMode,
     Zoom,
     EnterResizeMode,
+    ResizePaneLeft,
+    ResizePaneDown,
+    ResizePaneUp,
+    ResizePaneRight,
     ToggleSidebar,
     CyclePaneNext,
     CyclePanePrevious,
@@ -1340,6 +1365,10 @@ fn action_for_key(
         (&kb.close_pane, NavigateAction::ClosePane),
         (&kb.zoom, NavigateAction::Zoom),
         (&kb.resize_mode, NavigateAction::EnterResizeMode),
+        (&kb.resize_pane_left, NavigateAction::ResizePaneLeft),
+        (&kb.resize_pane_down, NavigateAction::ResizePaneDown),
+        (&kb.resize_pane_up, NavigateAction::ResizePaneUp),
+        (&kb.resize_pane_right, NavigateAction::ResizePaneRight),
         (&kb.toggle_sidebar, NavigateAction::ToggleSidebar),
         (&kb.reload_config, NavigateAction::ReloadConfig),
         (
@@ -1545,6 +1574,10 @@ pub(super) fn execute_navigate_action_in_context(
             leave_navigate_mode(state);
         }
         NavigateAction::EnterResizeMode => state.mode = Mode::Resize,
+        NavigateAction::ResizePaneLeft => state.resize_pane(NavDirection::Left),
+        NavigateAction::ResizePaneDown => state.resize_pane(NavDirection::Down),
+        NavigateAction::ResizePaneUp => state.resize_pane(NavDirection::Up),
+        NavigateAction::ResizePaneRight => state.resize_pane(NavDirection::Right),
         NavigateAction::ToggleSidebar => {
             state.sidebar_collapsed = !state.sidebar_collapsed;
             leave_navigate_mode(state);
@@ -2233,6 +2266,44 @@ navigate_pane_right = "ctrl+l"
         );
 
         assert_eq!(action, Some(NavigateAction::FocusPaneLeft));
+    }
+
+    #[test]
+    fn default_ctrl_hjkl_directly_focus_panes() {
+        let state = state_with_workspaces(&["test"]);
+        for (code, expected) in [
+            (KeyCode::Char('h'), NavigateAction::FocusPaneLeft),
+            (KeyCode::Char('j'), NavigateAction::FocusPaneDown),
+            (KeyCode::Char('k'), NavigateAction::FocusPaneUp),
+            (KeyCode::Char('l'), NavigateAction::FocusPaneRight),
+        ] {
+            let action = terminal_direct_navigation_action(
+                &state,
+                TerminalKey::new(code, KeyModifiers::CONTROL),
+            );
+            assert_eq!(action, Some(expected), "ctrl+{code:?} should focus a pane");
+        }
+    }
+
+    #[test]
+    fn default_ctrl_shift_hjkl_directly_resize_panes() {
+        let state = state_with_workspaces(&["test"]);
+        for (code, expected) in [
+            (KeyCode::Char('h'), NavigateAction::ResizePaneLeft),
+            (KeyCode::Char('j'), NavigateAction::ResizePaneDown),
+            (KeyCode::Char('k'), NavigateAction::ResizePaneUp),
+            (KeyCode::Char('l'), NavigateAction::ResizePaneRight),
+        ] {
+            let action = terminal_direct_navigation_action(
+                &state,
+                TerminalKey::new(code, KeyModifiers::CONTROL | KeyModifiers::SHIFT),
+            );
+            assert_eq!(
+                action,
+                Some(expected),
+                "ctrl+shift+{code:?} should resize a pane"
+            );
+        }
     }
 
     #[test]

@@ -372,13 +372,13 @@ pub struct KeysConfig {
     pub edit_scrollback: BindingConfig,
     /// Enter keyboard copy mode for the focused pane. Default: "prefix+[".
     pub copy_mode: BindingConfig,
-    /// Focus the pane to the left. Default: "prefix+h".
+    /// Focus the pane to the left. Default: ["ctrl+h", "prefix+h"].
     pub focus_pane_left: BindingConfig,
-    /// Focus the pane below. Default: "prefix+j".
+    /// Focus the pane below. Default: ["ctrl+j", "prefix+j"].
     pub focus_pane_down: BindingConfig,
-    /// Focus the pane above. Default: "prefix+k".
+    /// Focus the pane above. Default: ["ctrl+k", "prefix+k"].
     pub focus_pane_up: BindingConfig,
-    /// Focus the pane to the right. Default: "prefix+l".
+    /// Focus the pane to the right. Default: ["ctrl+l", "prefix+l"].
     pub focus_pane_right: BindingConfig,
     /// Swap the focused pane with the pane to the left. Default: "prefix+shift+h".
     pub swap_pane_left: BindingConfig,
@@ -405,6 +405,14 @@ pub struct KeysConfig {
     pub zoom: BindingConfig,
     /// Enter resize mode. Default: "prefix+r"
     pub resize_mode: BindingConfig,
+    /// Grow/shrink the focused pane toward the left. Default: "ctrl+shift+h".
+    pub resize_pane_left: BindingConfig,
+    /// Grow/shrink the focused pane toward the bottom. Default: "ctrl+shift+j".
+    pub resize_pane_down: BindingConfig,
+    /// Grow/shrink the focused pane toward the top. Default: "ctrl+shift+k".
+    pub resize_pane_up: BindingConfig,
+    /// Grow/shrink the focused pane toward the right. Default: "ctrl+shift+l".
+    pub resize_pane_right: BindingConfig,
     /// Toggle sidebar collapse. Default: "prefix+b"
     pub toggle_sidebar: BindingConfig,
     /// Optional indexed shortcuts expanded over number keys 1-9.
@@ -524,6 +532,14 @@ pub(crate) struct KeysConfigOverlay {
     #[serde(skip_serializing_if = "Option::is_none")]
     resize_mode: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    resize_pane_left: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resize_pane_down: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resize_pane_up: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    resize_pane_right: Option<BindingConfig>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     toggle_sidebar: Option<BindingConfig>,
     #[serde(skip_serializing_if = "Option::is_none")]
     indexed: Option<IndexedKeysConfig>,
@@ -600,6 +616,10 @@ impl<'de> Deserialize<'de> for KeysConfig {
         apply_field!(close_pane);
         apply_field!(zoom);
         apply_field!(resize_mode);
+        apply_field!(resize_pane_left);
+        apply_field!(resize_pane_down);
+        apply_field!(resize_pane_up);
+        apply_field!(resize_pane_right);
         apply_field!(toggle_sidebar);
         apply_field!(indexed);
         apply_field!(command);
@@ -698,6 +718,10 @@ impl KeysConfig {
         copy_effective_action_field!(close_pane, keybinds.close_pane);
         copy_effective_action_field!(zoom, keybinds.zoom);
         copy_effective_action_field!(resize_mode, keybinds.resize_mode);
+        copy_effective_action_field!(resize_pane_left, keybinds.resize_pane_left);
+        copy_effective_action_field!(resize_pane_down, keybinds.resize_pane_down);
+        copy_effective_action_field!(resize_pane_up, keybinds.resize_pane_up);
+        copy_effective_action_field!(resize_pane_right, keybinds.resize_pane_right);
         copy_effective_action_field!(toggle_sidebar, keybinds.toggle_sidebar);
         copy_user_field!(indexed);
 
@@ -785,7 +809,7 @@ pub struct UiConfig {
     pub mouse_scroll_lines: Option<NonZeroUsize>,
     /// Ask for confirmation before closing a workspace. Default: true.
     pub confirm_close: bool,
-    /// Ask for a tab name before creating a new tab. Default: true.
+    /// Ask for a tab name before creating a new tab. Default: false.
     pub prompt_new_tab_name: bool,
     /// Draw borders around split panes. Default: true.
     pub pane_borders: bool,
@@ -937,10 +961,10 @@ impl Default for KeysConfig {
             rename_pane: BindingConfig::one("prefix+shift+p"),
             edit_scrollback: BindingConfig::one("prefix+e"),
             copy_mode: BindingConfig::one("prefix+["),
-            focus_pane_left: BindingConfig::one("prefix+h"),
-            focus_pane_down: BindingConfig::one("prefix+j"),
-            focus_pane_up: BindingConfig::one("prefix+k"),
-            focus_pane_right: BindingConfig::one("prefix+l"),
+            focus_pane_left: BindingConfig::Many(vec!["ctrl+h".into(), "prefix+h".into()]),
+            focus_pane_down: BindingConfig::Many(vec!["ctrl+j".into(), "prefix+j".into()]),
+            focus_pane_up: BindingConfig::Many(vec!["ctrl+k".into(), "prefix+k".into()]),
+            focus_pane_right: BindingConfig::Many(vec!["ctrl+l".into(), "prefix+l".into()]),
             swap_pane_left: BindingConfig::one("prefix+shift+h"),
             swap_pane_down: BindingConfig::one("prefix+shift+j"),
             swap_pane_up: BindingConfig::one("prefix+shift+k"),
@@ -953,6 +977,10 @@ impl Default for KeysConfig {
             close_pane: BindingConfig::one("prefix+x"),
             zoom: BindingConfig::one("prefix+z"),
             resize_mode: BindingConfig::one("prefix+r"),
+            resize_pane_left: BindingConfig::one("ctrl+shift+h"),
+            resize_pane_down: BindingConfig::one("ctrl+shift+j"),
+            resize_pane_up: BindingConfig::one("ctrl+shift+k"),
+            resize_pane_right: BindingConfig::one("ctrl+shift+l"),
             toggle_sidebar: BindingConfig::one("prefix+b"),
             indexed: IndexedKeysConfig::default(),
             command: Vec::new(),
@@ -982,7 +1010,7 @@ impl Default for UiConfig {
             redraw_on_focus_gained: true,
             mouse_scroll_lines: None,
             confirm_close: true,
-            prompt_new_tab_name: true,
+            prompt_new_tab_name: false,
             pane_borders: true,
             pane_gaps: true,
             show_agent_labels_on_pane_borders: false,
@@ -1228,16 +1256,16 @@ directory = "~/Projects/herdr-worktrees"
     }
 
     #[test]
-    fn prompt_new_tab_name_defaults_on_and_parses() {
+    fn prompt_new_tab_name_defaults_off_and_parses() {
         let default_config = Config::default();
-        assert!(default_config.ui.prompt_new_tab_name);
+        assert!(!default_config.ui.prompt_new_tab_name);
 
         let toml = r#"
 [ui]
-prompt_new_tab_name = false
+prompt_new_tab_name = true
 "#;
         let config: Config = toml::from_str(toml).unwrap();
-        assert!(!config.ui.prompt_new_tab_name);
+        assert!(config.ui.prompt_new_tab_name);
     }
 
     #[test]

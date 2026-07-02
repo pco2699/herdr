@@ -23,7 +23,7 @@ Press `prefix+?` at any time to see every active binding.
 | --- | --- |
 | New tab | `prefix+c` |
 | Split right / down | `prefix+v` / `prefix+minus` |
-| Move between panes | `prefix+h/j/k/l` |
+| Move between panes | `ctrl+h/j/k/l` (or `prefix+h/j/k/l`) |
 | Workspace navigation | `prefix+w` |
 | Detach, leave everything running | `prefix+q` |
 
@@ -38,6 +38,7 @@ Panes:
 | Zoom the focused pane | `prefix+z` |
 | Close pane | `prefix+x` |
 | Swap panes | `prefix+shift+h/j/k/l` |
+| Resize the focused pane | `ctrl+shift+h/j/k/l` |
 | Resize mode | `prefix+r` |
 | Copy mode | `prefix+[` |
 
@@ -83,7 +84,7 @@ Any chord works as a binding: `ctrl+j`, `alt+k`, whatever fits your hands. But a
 
 We mapped the default keybindings of Ghostty, iTerm2, Terminal.app, kitty, WezTerm, Alacritty, Warp, Windows Terminal, GNOME Terminal, and Konsole, plus the global shortcuts of GNOME and KDE. One modifier family is almost untouched everywhere: `ctrl+alt`. Terminals leave it free, it is not affected by the macOS option-key composing behavior that blocks plain `alt` chords, and it transmits even in terminals without a modern keyboard protocol. It is the safe default recommendation; the choice stays yours.
 
-This setup keeps the prefix bindings working and adds direct chords on top:
+Herdr ships direct pane movement and resize on `ctrl+h/j/k/l` and `ctrl+shift+h/j/k/l`, keeping the `prefix+…` bindings as fallbacks. These `ctrl` chords are ergonomic but overlap with control codes some programs use inside a pane (`ctrl+h` is backspace, `ctrl+j` is newline/enter, `ctrl+l` clears the screen), and Herdr captures them before the pane sees them. If that bothers a program you use, drop the `ctrl+…` entries and rely on the prefix bindings, or move to the collision-free `ctrl+alt` family:
 
 ```toml
 [keys]

@@ -193,10 +193,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # close_tab = "prefix+shift+x"
 # rename_pane = "prefix+shift+p"
 # edit_scrollback = "prefix+e"
-# focus_pane_left = "prefix+h"
-# focus_pane_down = "prefix+j"
-# focus_pane_up = "prefix+k"
-# focus_pane_right = "prefix+l"
+# focus_pane_left = ["ctrl+h", "prefix+h"]
+# focus_pane_down = ["ctrl+j", "prefix+j"]
+# focus_pane_up = ["ctrl+k", "prefix+k"]
+# focus_pane_right = ["ctrl+l", "prefix+l"]
 # cycle_pane_next = "prefix+tab"
 # cycle_pane_previous = "prefix+shift+tab"
 # last_pane = ""          # optional, unset by default; bind e.g. "prefix+tab" for global back-and-forth
@@ -205,6 +205,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # close_pane = "prefix+x"
 # zoom = "prefix+z"       # legacy alias: fullscreen
 # resize_mode = "prefix+r"
+# resize_pane_left = "ctrl+shift+h"    # grow/shrink focused pane, no mode needed
+# resize_pane_down = "ctrl+shift+j"
+# resize_pane_up = "ctrl+shift+k"
+# resize_pane_right = "ctrl+shift+l"
 # toggle_sidebar = "prefix+b"
 
 # Navigate-mode movement. These local shortcuts win while navigate mode is open.
@@ -272,8 +276,9 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # confirm_close = true
 
 # Ask for a tab name before creating a new tab.
-# Set false to create tabs immediately with generated names.
-# prompt_new_tab_name = true
+# Default is false: new tabs are created immediately with generated names.
+# Set true to open the rename dialog first.
+# prompt_new_tab_name = false
 
 # Draw borders around split panes.
 # pane_borders = true

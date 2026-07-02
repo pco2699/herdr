@@ -4215,15 +4215,17 @@ last_pane = "prefix+tab"
         app.state.active = Some(0);
         app.state.selected = 0;
         app.state.mode = Mode::Terminal;
-        app.state.prefix_code = KeyCode::Char('l');
+        // Use the default prefix (ctrl+b = 0x02); ctrl+l is now a direct
+        // focus-pane binding, so it can no longer double as a prefix key.
+        app.state.prefix_code = KeyCode::Char('b');
         app.state.prefix_mods = KeyModifiers::CONTROL;
 
-        app.route_client_input(vec![0x0c]);
+        app.route_client_input(vec![0x02]);
         assert_eq!(app.state.mode, Mode::Prefix);
 
-        app.route_client_input(vec![0x0c]);
+        app.route_client_input(vec![0x02]);
         assert_eq!(app.state.mode, Mode::Terminal);
-        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from(vec![0x0c]));
+        assert_eq!(rx.recv().await.unwrap(), bytes::Bytes::from(vec![0x02]));
     }
 
     #[tokio::test]
