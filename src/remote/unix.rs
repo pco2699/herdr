@@ -166,10 +166,9 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         remote.keybindings,
         remote.live_handoff,
     );
-    let manage_ssh_config = crate::config::Config::load()
-        .config
-        .remote
-        .manage_ssh_config;
+    let loaded = crate::config::Config::load();
+    let transport = loaded.config.remote.transport;
+    let manage_ssh_config = loaded.config.remote.manage_ssh_config;
     let remote_ssh = RemoteSsh::new(remote.target.clone(), manage_ssh_config);
     let prepared_remote = prepare_remote_herdr(&remote_ssh, remote.live_handoff)?;
     ensure_remote_server_ready(
@@ -180,15 +179,34 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
         remote.live_handoff,
     )?;
 
-    let _bridge = SshStdioBridge::start(
-        remote.target,
-        prepared_remote.remote_herdr,
-        local_socket.clone(),
-        session_name,
-        remote_ssh.options(),
-    )?;
-
-    run_client_process(&local_socket, &reattach_command, remote.keybindings)
+    match transport {
+        crate::config::RemoteTransport::Et => {
+            // Persistent Eternal Terminal session: one authenticated, auto-
+            // reconnecting connection forwards a loopback port to a remote TCP
+            // bridge over `herdr-client.sock`.
+            let remote_port = remote_bridge_port(&session_name);
+            let local_port = pick_free_local_port()?;
+            let _tunnel = EtTunnel::start(
+                &remote.target,
+                &prepared_remote.remote_herdr,
+                &session_name,
+                local_port,
+                remote_port,
+            )?;
+            let _bridge = EtLocalBridge::start(local_socket.clone(), local_port)?;
+            run_client_process(&local_socket, &reattach_command, remote.keybindings)
+        }
+        crate::config::RemoteTransport::Ssh => {
+            let _bridge = SshStdioBridge::start(
+                remote.target,
+                prepared_remote.remote_herdr,
+                local_socket.clone(),
+                session_name,
+                remote_ssh.options(),
+            )?;
+            run_client_process(&local_socket, &reattach_command, remote.keybindings)
+        }
+    }
 }
 
 pub(crate) fn run_remote_client_bridge() -> io::Result<()> {
@@ -1836,6 +1854,258 @@ impl Drop for SshStdioBridge {
     }
 }
 
+const ET_TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+
+/// Deterministic remote TCP port for the Eternal Terminal data tunnel.
+///
+/// Derived from the session name (FNV-1a) into the private port range so
+/// repeated attaches to the same session reuse the same endpoint and distinct
+/// sessions rarely collide.
+fn remote_bridge_port(session_name: &str) -> u16 {
+    let mut hash: u32 = 0x811c_9dc5;
+    for byte in session_name.as_bytes() {
+        hash ^= u32::from(*byte);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    49152 + (hash % 16000) as u16
+}
+
+/// Bind an ephemeral local TCP port and return it. The listener is dropped
+/// immediately so `et` can bind the forwarded port; the brief race is
+/// acceptable for a loopback-only forward.
+fn pick_free_local_port() -> io::Result<u16> {
+    let listener = std::net::TcpListener::bind(("127.0.0.1", 0))?;
+    Ok(listener.local_addr()?.port())
+}
+
+fn remote_tcp_bridge_command(
+    remote_herdr: &RemoteHerdr,
+    session_name: &str,
+    remote_port: u16,
+) -> String {
+    let mut command = format!("exec {}", remote_herdr.shell_path);
+    if session_name != crate::session::DEFAULT_SESSION_NAME {
+        command.push_str(" --session ");
+        command.push_str(&shell_quote(session_name));
+    }
+    command.push_str(" remote-client-bridge-tcp --port ");
+    command.push_str(&remote_port.to_string());
+    command
+}
+
+fn et_tunnel_command(
+    target: &str,
+    remote_herdr: &RemoteHerdr,
+    session_name: &str,
+    local_port: u16,
+    remote_port: u16,
+) -> Command {
+    let mut command = Command::new("et");
+    command
+        .arg(target)
+        .arg("-t")
+        .arg(format!("{local_port}:{remote_port}"))
+        .arg("-c")
+        .arg(remote_tcp_bridge_command(
+            remote_herdr,
+            session_name,
+            remote_port,
+        ));
+    command
+}
+
+/// Persistent Eternal Terminal session that forwards `local_port` to the remote
+/// TCP bridge and runs that bridge as its command. Killed on drop.
+struct EtTunnel {
+    child: std::process::Child,
+}
+
+impl EtTunnel {
+    fn start(
+        target: &str,
+        remote_herdr: &RemoteHerdr,
+        session_name: &str,
+        local_port: u16,
+        remote_port: u16,
+    ) -> io::Result<Self> {
+        let mut command =
+            et_tunnel_command(target, remote_herdr, session_name, local_port, remote_port);
+        tracing::debug!(?command, "starting eternal terminal tunnel");
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit());
+        let child = command.spawn().map_err(|err| {
+            io::Error::new(
+                err.kind(),
+                format!(
+                    "failed to start eternal terminal (et): {err}. \
+                     Install et on both ends or set [remote] transport = \"ssh\"."
+                ),
+            )
+        })?;
+        Ok(Self { child })
+    }
+}
+
+impl Drop for EtTunnel {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn connect_tcp_with_retry(port: u16, timeout: Duration) -> io::Result<std::net::TcpStream> {
+    let deadline = Instant::now() + timeout;
+    loop {
+        match std::net::TcpStream::connect(("127.0.0.1", port)) {
+            Ok(stream) => return Ok(stream),
+            Err(err) => {
+                if Instant::now() >= deadline {
+                    return Err(io::Error::new(
+                        err.kind(),
+                        format!("failed to reach et tunnel on 127.0.0.1:{port}: {err}"),
+                    ));
+                }
+                thread::sleep(Duration::from_millis(100));
+            }
+        }
+    }
+}
+
+/// Local Unix listener that forwards each client connection over the Eternal
+/// Terminal TCP tunnel. Mirrors `SshStdioBridge` but connects to the forwarded
+/// loopback port instead of spawning ssh per connection.
+struct EtLocalBridge {
+    local_socket: PathBuf,
+    should_stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl EtLocalBridge {
+    fn start(local_socket: PathBuf, local_port: u16) -> io::Result<Self> {
+        let _ = std::fs::remove_file(&local_socket);
+        let listener = UnixListener::bind(&local_socket)?;
+        crate::ipc::restrict_socket_permissions(&local_socket, BRIDGE_SOCKET_PERMISSION_MODE)?;
+        listener.set_nonblocking(true)?;
+
+        let should_stop = Arc::new(AtomicBool::new(false));
+        let thread_stop = Arc::clone(&should_stop);
+        let thread = thread::spawn(move || {
+            while !thread_stop.load(Ordering::Acquire) {
+                match listener.accept() {
+                    Ok((stream, _addr)) => {
+                        if let Err(err) = stream.set_nonblocking(false) {
+                            eprintln!(
+                                "herdr: remote bridge failed to prepare client socket: {err}"
+                            );
+                            continue;
+                        }
+                        if let Err(err) = et_bridge_connection(stream, local_port) {
+                            eprintln!("herdr: remote et bridge failed: {err}");
+                        }
+                    }
+                    Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                        thread::sleep(BRIDGE_ACCEPT_POLL);
+                    }
+                    Err(err) => {
+                        eprintln!("herdr: remote bridge listener failed: {err}");
+                        break;
+                    }
+                }
+            }
+        });
+
+        Ok(Self {
+            local_socket,
+            should_stop,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for EtLocalBridge {
+    fn drop(&mut self) {
+        self.should_stop.store(true, Ordering::Release);
+        let _ = std::fs::remove_file(&self.local_socket);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn et_bridge_connection(local: UnixStream, local_port: u16) -> io::Result<()> {
+    let tcp = connect_tcp_with_retry(local_port, ET_TUNNEL_CONNECT_TIMEOUT)?;
+    let mut local_read = local.try_clone()?;
+    let mut local_write = local;
+    let mut tcp_read = tcp.try_clone()?;
+    let mut tcp_write = tcp;
+
+    let upload = thread::spawn(move || {
+        let _ = copy_flush(&mut local_read, &mut tcp_write);
+        let _ = tcp_write.shutdown(std::net::Shutdown::Write);
+    });
+
+    let result = copy_flush(&mut tcp_read, &mut local_write).map(|_| ());
+    let _ = local_write.shutdown(std::net::Shutdown::Write);
+    let _ = upload.join();
+    result
+}
+
+/// Remote side of the Eternal Terminal transport: accept TCP connections on the
+/// forwarded loopback port and bridge each to the local `herdr-client.sock`.
+pub(crate) fn run_remote_client_bridge_tcp(port: u16) -> io::Result<()> {
+    ensure_remote_server_running()?;
+
+    let socket_path = crate::server::socket_paths::client_socket_path();
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
+
+    for stream in listener.incoming() {
+        let tcp = match stream {
+            Ok(tcp) => tcp,
+            Err(err) => {
+                eprintln!("herdr: remote tcp bridge accept failed: {err}");
+                continue;
+            }
+        };
+        let socket_path = socket_path.clone();
+        thread::spawn(move || {
+            if let Err(err) = remote_tcp_bridge_connection(tcp, &socket_path) {
+                eprintln!("herdr: remote tcp bridge connection failed: {err}");
+            }
+        });
+    }
+
+    Ok(())
+}
+
+fn remote_tcp_bridge_connection(tcp: std::net::TcpStream, socket_path: &Path) -> io::Result<()> {
+    let socket = UnixStream::connect(socket_path).map_err(|err| {
+        io::Error::new(
+            err.kind(),
+            format!(
+                "failed to connect to remote Herdr client socket {}: {err}",
+                socket_path.display()
+            ),
+        )
+    })?;
+
+    let mut tcp_read = tcp.try_clone()?;
+    let mut tcp_write = tcp;
+    let mut socket_read = socket.try_clone()?;
+    let mut socket_write = socket;
+
+    let upload = thread::spawn(move || {
+        let _ = copy_flush(&mut tcp_read, &mut socket_write);
+        let _ = socket_write.shutdown(std::net::Shutdown::Write);
+    });
+
+    let result = copy_flush(&mut socket_read, &mut tcp_write).map(|_| ());
+    let _ = tcp_write.shutdown(std::net::Shutdown::Write);
+    let _ = upload.join();
+    result
+}
+
 /// Creates a fresh user-only (`0700`) directory for the generated ssh config
 /// and control socket, returning its path.
 ///
@@ -2150,6 +2420,56 @@ mod tests {
         let probe = parse_installed_remote_probe("PLATFORM SunOS sparc\nNOMATCH\n");
         assert!(probe.platform.is_none());
         assert!(probe.matched_path.is_none());
+    }
+
+    #[test]
+    fn remote_bridge_port_is_deterministic_and_in_private_range() {
+        let a = remote_bridge_port("default");
+        let b = remote_bridge_port("default");
+        let c = remote_bridge_port("other");
+        assert_eq!(a, b, "same session name must map to the same port");
+        assert_ne!(a, c, "different session names should usually differ");
+        for name in ["default", "other", "a-very-long-session-name", ""] {
+            let port = remote_bridge_port(name);
+            assert!(
+                (49152..=65151).contains(&port),
+                "port {port} out of private range"
+            );
+        }
+    }
+
+    #[test]
+    fn remote_tcp_bridge_command_includes_port_and_session() {
+        let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+        let default = remote_tcp_bridge_command(&remote_herdr, "default", 49222);
+        assert!(default.contains("remote-client-bridge-tcp --port 49222"));
+        assert!(!default.contains("--session"));
+
+        let named = remote_tcp_bridge_command(&remote_herdr, "work", 50000);
+        assert!(named.contains("--session work"));
+        assert!(named.contains("remote-client-bridge-tcp --port 50000"));
+    }
+
+    #[test]
+    fn et_tunnel_command_forwards_port_and_runs_bridge() {
+        let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+        let command = et_tunnel_command("user@host", &remote_herdr, "default", 12000, 49222)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(command.contains(&"user@host".to_string()));
+        assert!(command.contains(&"-t".to_string()));
+        assert!(command.contains(&"12000:49222".to_string()));
+        assert!(command.contains(&"-c".to_string()));
+        assert!(command
+            .iter()
+            .any(|arg| arg.contains("remote-client-bridge-tcp --port 49222")));
     }
 
     #[test]

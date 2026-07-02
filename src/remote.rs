@@ -146,3 +146,11 @@ pub(crate) fn run_remote_client_bridge() -> std::io::Result<()> {
         "remote client bridge is not supported on Windows yet",
     ))
 }
+
+#[cfg(windows)]
+pub(crate) fn run_remote_client_bridge_tcp(_port: u16) -> std::io::Result<()> {
+    debug_assert!(!crate::platform::capabilities().remote_attach);
+    Err(std::io::Error::other(
+        "remote client bridge is not supported on Windows yet",
+    ))
+}

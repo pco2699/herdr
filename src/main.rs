@@ -336,6 +336,13 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # resume_agents_on_restore = true
 
 [remote]
+# Transport for the `herdr --remote` data connection.
+# "et" (default) uses Eternal Terminal: one persistent, auto-reconnecting
+# session that forwards a loopback port to a remote bridge over the client
+# socket. Requires `et` installed on both ends. "ssh" uses the plain ssh
+# stdio bridge instead. Bootstrap (install/version checks) always uses ssh.
+# transport = "et"
+
 # Whether herdr manages the ssh config used for `herdr --remote`.
 # When true (default), herdr runs remote ssh through a generated config that
 # includes your ~/.ssh/config first and adds ServerAliveInterval/
@@ -449,6 +456,21 @@ fn main() -> io::Result<()> {
     // Subcommands and flags (no TUI, no logging needed)
     if args.get(1).map(|s| s.as_str()) == Some("remote-client-bridge") {
         return remote::run_remote_client_bridge();
+    }
+
+    if args.get(1).map(|s| s.as_str()) == Some("remote-client-bridge-tcp") {
+        let port = match args.get(2).map(String::as_str) {
+            Some("--port") => args.get(3).and_then(|value| value.parse::<u16>().ok()),
+            Some(other) => other
+                .strip_prefix("--port=")
+                .and_then(|value| value.parse::<u16>().ok()),
+            None => None,
+        };
+        let Some(port) = port else {
+            eprintln!("usage: herdr remote-client-bridge-tcp --port <port>");
+            std::process::exit(2);
+        };
+        return remote::run_remote_client_bridge_tcp(port);
     }
 
     if args.get(1).map(|s| s.as_str()) == Some("server") {
@@ -639,6 +661,7 @@ fn main() -> io::Result<()> {
                 "server",
                 "client",
                 "remote-client-bridge",
+                "remote-client-bridge-tcp",
                 "update",
                 "status",
                 "config",

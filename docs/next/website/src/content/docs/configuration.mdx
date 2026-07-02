@@ -110,14 +110,22 @@ Deleting a worktree checkout is explicit. Use `Delete worktree checkout...` on a
 
 ## Remote attach
 
-Remote attach manages its SSH connection with a temporary keepalive and connection-reuse fallback by default.
+Remote attach uses Eternal Terminal for its data connection by default, and manages its SSH bootstrap connection with a temporary keepalive and connection-reuse fallback.
 
 ```toml
 [remote]
+transport = "et"
 manage_ssh_config = true
 ```
 
-When enabled, `herdr --remote` writes a private temporary SSH config that includes your `~/.ssh/config` and `/etc/ssh/ssh_config` first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Herdr also uses a private per-attach OpenSSH control socket to reuse the first authenticated connection. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.
+`transport` selects how the persistent `herdr --remote` data connection is carried:
+
+- `"et"` (default) uses [Eternal Terminal](https://eternalterminal.dev/). `et` must be installed on both the local machine and the remote host. Herdr starts one persistent, auto-reconnecting `et` session that forwards a loopback TCP port to a small remote bridge over the server's client socket, so the connection survives network drops and suspends. The remote TCP port is derived deterministically from the session name.
+- `"ssh"` uses a plain `ssh` stdio bridge (one `ssh` process per client connection), the original behavior.
+
+Either transport still bootstraps over `ssh` (detecting the platform and installing/matching the remote `herdr` binary); that bootstrap now runs in a single `ssh` round trip for an already-provisioned remote, so it authenticates once instead of once per probe.
+
+When `manage_ssh_config` is enabled, `herdr --remote` writes a private temporary SSH config that includes your `~/.ssh/config` and `/etc/ssh/ssh_config` first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Herdr also uses a private per-attach OpenSSH control socket to reuse the first authenticated connection. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.
 
 ## Keybindings
 

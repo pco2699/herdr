@@ -868,17 +868,33 @@ pub struct AdvancedConfig {
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct RemoteConfig {
-    /// Add keepalive fallbacks and private connection reuse for `herdr --remote`.
-    /// Set false to run plain ssh unchanged. Default: true.
+    /// Transport for the `herdr --remote` data connection. `et` uses Eternal
+    /// Terminal (persistent, auto-reconnecting); `ssh` uses the plain ssh stdio
+    /// bridge. Default: "et".
+    pub transport: RemoteTransport,
+    /// Add keepalive fallbacks and private connection reuse for the ssh
+    /// transport and bootstrap. Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
 }
 
 impl Default for RemoteConfig {
     fn default() -> Self {
         Self {
+            transport: RemoteTransport::default(),
             manage_ssh_config: true,
         }
     }
+}
+
+/// Transport used for the `herdr --remote` persistent data connection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RemoteTransport {
+    /// Eternal Terminal: one persistent, auto-reconnecting session.
+    #[default]
+    Et,
+    /// Plain ssh stdio bridge (one ssh process per client connection).
+    Ssh,
 }
 
 #[derive(Debug, Default, Deserialize)]
