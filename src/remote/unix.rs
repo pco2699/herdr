@@ -1932,6 +1932,22 @@ fn x2p_socket_path() -> String {
         .into_owned()
 }
 
+/// Render a spawned `et` Command's args as a copy-pasteable string for logs.
+fn et_command_display(command: &Command) -> String {
+    command
+        .get_args()
+        .map(|arg| {
+            let text = arg.to_string_lossy();
+            if text.contains(' ') {
+                format!("'{text}'")
+            } else {
+                text.into_owned()
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 fn et_tunnel_command(
     target: &str,
     remote_herdr: &RemoteHerdr,
@@ -1997,10 +2013,23 @@ impl EtTunnel {
             corp_internal,
         );
         tracing::debug!(?command, "starting eternal terminal tunnel");
+        // The --remote launcher doesn't init tracing, so surface the exact et
+        // invocation and capture et's own output to a log the user can inspect
+        // (et writes connection failures to stdout/stderr, which we otherwise
+        // discard). Printed before the thin client takes over the terminal.
+        let log_path = std::env::temp_dir().join(format!("herdr-et-{}.log", std::process::id()));
+        eprintln!(
+            "herdr: et tunnel local 127.0.0.1:{local_port} -> {target} remote {remote_port} \
+             (corp_internal={corp_internal}); et output -> {}",
+            log_path.display()
+        );
+        eprintln!("herdr: running: et {}", et_command_display(&command));
+        let stdout = std::fs::File::create(&log_path)?;
+        let stderr = stdout.try_clone()?;
         command
             .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::inherit());
+            .stdout(Stdio::from(stdout))
+            .stderr(Stdio::from(stderr));
         let child = command.spawn().map_err(|err| {
             io::Error::new(
                 err.kind(),
