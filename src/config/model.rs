@@ -884,6 +884,8 @@ pub struct RemoteConfig {
     /// copies the local binary if the remote matches this machine's platform,
     /// otherwise downloads the released binary. Overridden by the
     /// `HERDR_REMOTE_BINARY` environment variable. Default: unset.
+    // Only the Unix remote launcher reads this; on other targets it is unused.
+    #[cfg_attr(not(unix), allow(dead_code))]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_path: Option<String>,
 }
