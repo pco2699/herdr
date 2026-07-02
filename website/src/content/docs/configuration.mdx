@@ -110,14 +110,27 @@ Deleting a worktree checkout is explicit. Use `Delete worktree checkout...` on a
 
 ## Remote attach
 
-Remote attach manages its SSH bridge with a temporary keepalive fallback by default.
+Remote attach uses Eternal Terminal for its data connection by default, and manages its SSH bootstrap connection with a temporary keepalive and connection-reuse fallback.
 
 ```toml
 [remote]
+transport = "et"
 manage_ssh_config = true
+et_corp_internal = false
 ```
 
-When enabled, `herdr --remote` writes a private temporary SSH config that includes your `~/.ssh/config` and `/etc/ssh/ssh_config` first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own SSH keepalive settings win. Set `manage_ssh_config = false` to run the bridge through plain `ssh` without Herdr's generated config.
+`transport` selects how the persistent `herdr --remote` data connection is carried:
+
+- `"et"` (default) uses [Eternal Terminal](https://eternalterminal.dev/). `et` must be installed on both the local machine and the remote host. Herdr starts one persistent, auto-reconnecting `et` session that forwards a loopback TCP port to a small remote bridge over the server's client socket, so the connection survives network drops and suspends. The remote TCP port is derived deterministically from the session name.
+- `"ssh"` uses a plain `ssh` stdio bridge (one `ssh` process per client connection), the original behavior.
+
+`et_corp_internal` (default `false`) switches the `et` transport to a corporate/VPNless flavour: herdr passes `--ssh-socket`, `--forward-ssh-agent`, and an `x2ssh` `ProxyCommand` for VPNless auth, and reaches the et server on the corporate port. The x2p broker socket is taken from the `X2P_SOCK` environment variable when set. Leave it `false` for bare `et`.
+
+`binary_path` points at a local `herdr` binary (built for the remote's OS/arch) to install when a remote host has no matching `herdr`. When unset, herdr copies the local binary if the remote matches this machine's platform, otherwise downloads the released binary. The `HERDR_REMOTE_BINARY` environment variable overrides it.
+
+Either transport still bootstraps over `ssh` (detecting the platform and installing/matching the remote `herdr` binary); that bootstrap now runs in a single `ssh` round trip for an already-provisioned remote, so it authenticates once instead of once per probe.
+
+When `manage_ssh_config` is enabled, `herdr --remote` writes a private temporary SSH config that includes your `~/.ssh/config` and `/etc/ssh/ssh_config` first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Herdr also uses a private per-attach OpenSSH control socket to reuse the first authenticated connection. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.
 
 ## Keybindings
 
@@ -300,27 +313,31 @@ Common options:
 sidebar_width = 32
 sidebar_min_width = 18
 sidebar_max_width = 36
+sidebar_collapsed_mode = "compact"
 mobile_width_threshold = 64
 mouse_capture = true
 right_click_passthrough_modifier = ""
 redraw_on_focus_gained = true
 mouse_scroll_lines = 3
 confirm_close = true
-prompt_new_tab_name = true
+prompt_new_tab_name = false
 pane_borders = true
 pane_gaps = true
 show_agent_labels_on_pane_borders = false
+hide_tab_bar_when_single_tab = false
 agent_panel_sort = "spaces"
 accent = "cyan"
 ```
 
 `sidebar_min_width` and `sidebar_max_width` control the expanded sidebar's resize bounds in columns. The defaults are 18 and 36.
 
+`sidebar_collapsed_mode` controls what remains visible after toggling the sidebar closed. The default, `compact`, keeps the narrow status rail. Set it to `hidden` to make the collapsed sidebar zero-width; reopen it with `keys.toggle_sidebar`.
+
 `mobile_width_threshold` controls the terminal width at or below which Herdr uses the mobile single-column layout. The default is 64 columns; increase it for foldables, tablets, or wide phone terminals.
 
 The agent panel shows all agents across all spaces. `agent_panel_sort` can be `spaces` or `priority`; `workspaces` is accepted as an alias for `spaces`. `spaces` is the default and keeps agents grouped by space order. `priority` sorts by attention priority: blocked, done, working, idle, then unknown. Within the same status, agents that most recently changed state appear first.
 
-`confirm_close` controls whether closing a workspace asks for confirmation. `prompt_new_tab_name` controls whether new tabs ask for a label first.
+`confirm_close` controls whether closing a workspace asks for confirmation. `prompt_new_tab_name` controls whether new tabs ask for a label first; it defaults to `false`, so new tabs are created immediately with generated names. Set it to `true` to open the rename dialog first.
 
 Set `mouse_capture = false` if you want your terminal to handle normal clicks, such as command-clicking URLs. With mouse capture enabled, Ctrl-click opens pane links when your terminal sends that modified click to Herdr. This includes macOS; Cmd-click is not reported separately from plain click while Herdr captures mouse input. Use Shift-Ctrl-click on Linux or Shift-Cmd-click on macOS for the terminal-native bypass path.
 
@@ -333,6 +350,8 @@ Set `mouse_scroll_lines` to change how many pane scrollback lines each mouse whe
 Set `pane_borders = false` to remove split pane borders. Set `pane_gaps = false` to make split panes share compact divider borders. With borders disabled, pane gaps use one blank terminal cell between panes. Terminal cells are usually taller than they are wide, so a one-row gap between top/bottom panes can look larger than a one-column gap between left/right panes.
 
 Set `show_agent_labels_on_pane_borders = true` if you want detected agent labels in split pane borders when no manual pane label is set.
+
+Set `hide_tab_bar_when_single_tab = true` to hide the tab row when the active workspace has exactly one tab. New tabs can still be created with the configured keybinding. When a second tab appears, Herdr restores the tab row and resizes panes to make room for it.
 
 ## Notifications
 

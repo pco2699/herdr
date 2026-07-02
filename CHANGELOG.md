@@ -2,6 +2,32 @@
 
 ## Unreleased
 
+### Added
+- Fork: direct pane resize with `ctrl+shift+h/j/k/l`, in addition to the `prefix+r` resize mode.
+- Fork: `[remote] transport = "et"` carries `herdr --remote` over Eternal Terminal (persistent, auto-reconnecting), with `[remote] et_corp_internal` for VPNless/x2p auth and `[remote] binary_path` to install a chosen local herdr build on remotes.
+- Added `ui.sidebar_collapsed_mode = "hidden"` to make a collapsed sidebar use zero width while keeping the existing compact rail as the default. (#842)
+- Added `herdr completion <shell>` / `herdr completions <shell>` to generate shell completion scripts for bash, elvish, fish, PowerShell, and zsh. (#435)
+- Added `session.snapshot` to bootstrap client runtime state in one socket API response before subscribing to events.
+- Added `herdr api schema` to inspect the bundled socket API schema, with `--json` for the full JSON Schema document and `--output PATH` for file output.
+- Added `herdr terminal session observe` for read-only live ANSI terminal streams that bridge processes can consume as newline-delimited JSON.
+- Added `herdr terminal session control` for bridge processes that need live ANSI frames plus input, resize, scroll, release, and takeover authority.
+- Added `ui.hide_tab_bar_when_single_tab` to hide the tab row when a workspace has one tab. (#448)
+
+### Changed
+- Fork: pane movement now binds `ctrl+h/j/k/l` by default, keeping `prefix+h/j/k/l` as a fallback.
+- Fork: new tabs are created immediately with generated names by default (`ui.prompt_new_tab_name` now defaults to false).
+- Fork: `herdr --remote` uses Eternal Terminal by default and runs remote bootstrap in a single ssh round trip (one auth prompt instead of one per probe); update and remote-install pull from this fork's releases.
+- Bumped the client/server protocol version to 15 for socket API placement mutation event and response compatibility.
+
+### Fixed
+- `prefix+e` scrollback editor panes now open on Windows without trying to run `/bin/sh`; Windows uses `VISUAL`, then `EDITOR`, then `notepad.exe` as the fallback editor. (#914)
+- `herdr pane split --current` now resolves to the calling Herdr pane instead of the UI-focused pane when run inside a pane. (#902)
+- Native Windows clients running inside Alacritty now preserve mouse reports and `ctrl+j` input instead of leaking mouse escape sequences into panes. `shift+enter` remains dependent on whether the outer terminal reports it as a distinct modified Enter key. (#792)
+- OMP integration state now recovers after resumed sessions such as `omp -c` and reports Ask/tool approval waits as blocked instead of leaving the pane working or stuck on the previous OMP session. (#879)
+- Remote attach now discovers compatible Homebrew, mise, and Nix profile installs before offering to install a sidecar binary to `~/.local/bin/herdr`. (#840)
+- `herdr --remote` sessions now keep the remote server in its own login-independent session and preserve compatible running servers after helper binary updates, so network drops should disconnect only the client instead of killing remote panes.
+- `herdr --remote` now reuses one OpenSSH connection across setup probes, installs, server checks, and the final bridge when `[remote].manage_ssh_config` is enabled, so password-based hosts prompt once instead of once per setup command. (#888)
+
 ## [0.7.1] - 2026-06-24
 
 ### Added

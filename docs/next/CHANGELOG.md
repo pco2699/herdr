@@ -3,6 +3,8 @@
 ## Unreleased
 
 ### Added
+- Fork: direct pane resize with `ctrl+shift+h/j/k/l`, in addition to the `prefix+r` resize mode.
+- Fork: `[remote] transport = "et"` carries `herdr --remote` over Eternal Terminal (persistent, auto-reconnecting), with `[remote] et_corp_internal` for VPNless/x2p auth and `[remote] binary_path` to install a chosen local herdr build on remotes.
 - Added `ui.sidebar_collapsed_mode = "hidden"` to make a collapsed sidebar use zero width while keeping the existing compact rail as the default. (#842)
 - Added `herdr completion <shell>` / `herdr completions <shell>` to generate shell completion scripts for bash, elvish, fish, PowerShell, and zsh. (#435)
 - Added `session.snapshot` to bootstrap client runtime state in one socket API response before subscribing to events.
@@ -12,6 +14,9 @@
 - Added `ui.hide_tab_bar_when_single_tab` to hide the tab row when a workspace has one tab. (#448)
 
 ### Changed
+- Fork: pane movement now binds `ctrl+h/j/k/l` by default, keeping `prefix+h/j/k/l` as a fallback.
+- Fork: new tabs are created immediately with generated names by default (`ui.prompt_new_tab_name` now defaults to false).
+- Fork: `herdr --remote` uses Eternal Terminal by default and runs remote bootstrap in a single ssh round trip (one auth prompt instead of one per probe); update and remote-install pull from this fork's releases.
 - Bumped the client/server protocol version to 15 for socket API placement mutation event and response compatibility.
 
 ### Fixed
