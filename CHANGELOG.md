@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.2] - 2026-07-02
+
 ### Added
 - Fork: direct pane resize with `ctrl+shift+h/j/k/l`, in addition to the `prefix+r` resize mode.
 - Fork: `[remote] transport = "et"` carries `herdr --remote` over Eternal Terminal (persistent, auto-reconnecting), with `[remote] et_corp_internal` for VPNless/x2p auth and `[remote] binary_path` to install a chosen local herdr build on remotes.
