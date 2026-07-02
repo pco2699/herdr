@@ -627,9 +627,21 @@ fn prepare_remote_herdr(
     ssh: &RemoteSsh,
     live_handoff_enabled: bool,
 ) -> io::Result<PreparedRemoteHerdr> {
+    let override_binary = remote_binary_override_path()?;
+
+    // Fast path: a single round trip that detects the platform and, when the
+    // remote already has a herdr matching this client's version and protocol,
+    // resolves its path. An already-provisioned remote then authenticates once
+    // for bootstrap instead of once per probe (e.g. one 2FA prompt rather than
+    // several). On any miss we fall through to the full multi-step flow below.
+    if override_binary.is_none() {
+        if let Some(prepared) = probe_installed_remote(ssh)? {
+            return Ok(prepared);
+        }
+    }
+
     let platform = detect_remote_platform(ssh)?;
     let remote_herdr = RemoteHerdr::for_platform(platform);
-    let override_binary = remote_binary_override_path()?;
     let remote_binary_candidates = remote_binary_candidates(ssh, &remote_herdr)?;
 
     if override_binary.is_none() {
@@ -857,6 +869,123 @@ fn remote_binary_matches(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Res
 fn remote_binary_exists(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<bool> {
     let command = format!("test -x {}", remote_herdr.shell_path);
     Ok(ssh.sh_output(&command)?.status.success())
+}
+
+struct InstalledRemoteProbe {
+    platform: Option<RemotePlatform>,
+    matched_path: Option<String>,
+    matched_status: Option<String>,
+}
+
+/// Detect the remote platform and locate an already-installed herdr that matches
+/// this client, in a single ssh round trip. Returns `None` (so the caller falls
+/// back to the multi-step flow) when the platform is unsupported or no matching
+/// binary is found.
+fn probe_installed_remote(ssh: &RemoteSsh) -> io::Result<Option<PreparedRemoteHerdr>> {
+    let output = ssh.sh_output(&installed_remote_probe_script())?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+    let probe = parse_installed_remote_probe(&String::from_utf8_lossy(&output.stdout));
+    let (Some(platform), Some(path), Some(status)) =
+        (probe.platform, probe.matched_path, probe.matched_status)
+    else {
+        return Ok(None);
+    };
+    // The remote shell already matched the version string; re-verify the wire
+    // protocol here so a mismatched build never reaches the bridge.
+    let protocol_ok = parse_client_status_json(&status)
+        .map(|status| status.protocol == CURRENT_PROTOCOL)
+        .unwrap_or(false);
+    if !protocol_ok {
+        return Ok(None);
+    }
+    let remote_herdr = RemoteHerdr::for_platform(platform).with_shell_path(shell_quote(&path));
+    Ok(Some(PreparedRemoteHerdr {
+        remote_herdr,
+        installed_or_replaced: false,
+        stop_after_install_approved: false,
+    }))
+}
+
+fn installed_remote_probe_script() -> String {
+    const TEMPLATE: &str = r#"os=$(uname -s 2>/dev/null); arch=$(uname -m 2>/dev/null)
+printf 'PLATFORM %s %s\n' "$os" "$arch"
+home=${HOME:-}
+user=${USER:-}
+want=__WANT__
+mise_version=__MISE_VERSION__
+try() {
+    p=$1
+    [ -n "$p" ] || return 0
+    case "$p" in */mise/shims/herdr) return 0 ;; esac
+    [ -x "$p" ] || return 0
+    v=$("$p" --version 2>/dev/null) || return 0
+    [ "$v" = "$want" ] || return 0
+    s=$("$p" status client --json 2>/dev/null) || return 0
+    printf 'MATCH %s\n%s\n' "$p" "$s"
+    exit 0
+}
+try "$(command -v herdr 2>/dev/null)"
+[ -n "$home" ] && try "$home/.local/bin/herdr"
+case "$os" in
+    Darwin)
+        try /opt/homebrew/bin/herdr
+        try /usr/local/bin/herdr
+        ;;
+    Linux)
+        try /home/linuxbrew/.linuxbrew/bin/herdr
+        ;;
+esac
+if [ -n "$home" ]; then
+    try "$home/.local/share/mise/installs/herdr/$mise_version/bin/herdr"
+    try "$home/.local/share/mise/installs/github-ogulcancelik-herdr/$mise_version/herdr"
+    try "$home/.nix-profile/bin/herdr"
+fi
+[ -n "$user" ] && try "/etc/profiles/per-user/$user/bin/herdr"
+try /nix/var/nix/profiles/default/bin/herdr
+try /run/current-system/sw/bin/herdr
+printf 'NOMATCH\n'
+"#;
+    TEMPLATE
+        .replace(
+            "__WANT__",
+            &shell_quote(&format!("herdr {}", current_version())),
+        )
+        .replace("__MISE_VERSION__", &shell_quote(&current_version()))
+}
+
+fn parse_installed_remote_probe(stdout: &str) -> InstalledRemoteProbe {
+    let mut lines = stdout.lines();
+    let mut platform = None;
+    for line in lines.by_ref() {
+        if let Some(rest) = line.strip_prefix("PLATFORM ") {
+            let mut parts = rest.split_whitespace();
+            let os = parts.next().unwrap_or_default();
+            let arch = parts.next().unwrap_or_default();
+            platform = RemotePlatform::from_uname(os, arch);
+            break;
+        }
+    }
+
+    let mut matched_path = None;
+    let mut matched_status = None;
+    for line in lines.by_ref() {
+        if let Some(path) = line.strip_prefix("MATCH ") {
+            matched_path = Some(path.trim().to_string());
+            matched_status = Some(lines.collect::<Vec<_>>().join("\n"));
+            break;
+        }
+        if line.trim() == "NOMATCH" {
+            break;
+        }
+    }
+
+    InstalledRemoteProbe {
+        platform,
+        matched_path,
+        matched_status,
+    }
 }
 
 fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
@@ -1970,6 +2099,58 @@ fn sanitize_path_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn installed_probe_script_embeds_version_and_markers() {
+        let script = installed_remote_probe_script();
+        assert!(script.contains("PLATFORM"));
+        assert!(script.contains("NOMATCH"));
+        assert!(script.contains(&format!("herdr {}", current_version())));
+        // The mise install path is resolved from the bare version shell var.
+        assert!(script.contains(&format!("mise_version={}", current_version())));
+        assert!(script.contains("installs/herdr/$mise_version"));
+    }
+
+    #[test]
+    fn parse_installed_probe_reads_matched_binary() {
+        let stdout = "PLATFORM Linux x86_64\n\
+             MATCH /home/user/.local/bin/herdr\n\
+             {\"protocol\":15}\n";
+        let probe = parse_installed_remote_probe(stdout);
+        assert_eq!(
+            probe.platform,
+            Some(RemotePlatform {
+                os: "linux",
+                arch: "x86_64"
+            })
+        );
+        assert_eq!(
+            probe.matched_path.as_deref(),
+            Some("/home/user/.local/bin/herdr")
+        );
+        assert_eq!(probe.matched_status.as_deref(), Some("{\"protocol\":15}"));
+    }
+
+    #[test]
+    fn parse_installed_probe_handles_nomatch() {
+        let probe = parse_installed_remote_probe("PLATFORM Darwin arm64\nNOMATCH\n");
+        assert_eq!(
+            probe.platform,
+            Some(RemotePlatform {
+                os: "macos",
+                arch: "aarch64"
+            })
+        );
+        assert!(probe.matched_path.is_none());
+        assert!(probe.matched_status.is_none());
+    }
+
+    #[test]
+    fn parse_installed_probe_rejects_unsupported_platform() {
+        let probe = parse_installed_remote_probe("PLATFORM SunOS sparc\nNOMATCH\n");
+        assert!(probe.platform.is_none());
+        assert!(probe.matched_path.is_none());
+    }
 
     #[test]
     fn bridge_socket_is_user_only() {
