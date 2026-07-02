@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.7.3] - 2026-07-02
+
 ### Changed
 - Fork: `herdr --remote` logs the exact `et` command and captures `et`'s stdout/stderr to a temp-dir log file, so Eternal Terminal connection failures are diagnosable.
 
