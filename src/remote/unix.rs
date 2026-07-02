@@ -197,6 +197,11 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
                 loaded.config.remote.et_corp_internal,
             )?;
             let _bridge = EtLocalBridge::start(local_socket.clone(), local_port)?;
+            // The et port-forward is available before the remote `-c` bridge has
+            // bound its port; a client that connects too early gets an RST
+            // (unlike the ssh stdio bridge, which buffers). Wait for the remote
+            // end to be ready before handing the terminal to the client.
+            wait_for_et_tunnel(local_port, ET_TUNNEL_CONNECT_TIMEOUT);
             run_client_process(&local_socket, &reattach_command, remote.keybindings)
         }
         crate::config::RemoteTransport::Ssh => {
@@ -2058,6 +2063,41 @@ impl Drop for EtTunnel {
     fn drop(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
+    }
+}
+
+/// Wait until the et tunnel's remote end accepts connections. et's local
+/// forward is up before the remote `-c` bridge binds its port, so a connection
+/// made too early is reset. A ready remote bridge connects to `herdr-client.sock`
+/// and the server then waits for the client handshake, so a probe that connects
+/// and sees no immediate reset/EOF (read times out) means the tunnel is ready.
+fn wait_for_et_tunnel(local_port: u16, timeout: Duration) {
+    use std::io::Read as _;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if let Ok(stream) = std::net::TcpStream::connect(("127.0.0.1", local_port)) {
+            let _ = stream.set_read_timeout(Some(Duration::from_millis(400)));
+            let mut buf = [0u8; 1];
+            match (&stream).read(&mut buf) {
+                // Connected and the server is awaiting the handshake (no data yet).
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    return;
+                }
+                // Any bytes back also mean the far end is live.
+                Ok(n) if n > 0 => return,
+                // EOF/reset: the remote bridge is not up yet — keep waiting.
+                _ => {}
+            }
+        }
+        if Instant::now() >= deadline {
+            return;
+        }
+        thread::sleep(Duration::from_millis(200));
     }
 }
 
