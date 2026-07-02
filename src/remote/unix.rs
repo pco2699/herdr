@@ -1996,6 +1996,10 @@ fn et_tunnel_command(
 /// TCP bridge and runs that bridge as its command. Killed on drop.
 struct EtTunnel {
     child: std::process::Child,
+    // Held open so et never sees stdin EOF; otherwise it tears down the session
+    // (SIGHUP-ing the remote `-c` bridge) the moment it starts, which surfaces as
+    // "connection reset by peer" on the first client connection.
+    _stdin: Option<std::process::ChildStdin>,
 }
 
 impl EtTunnel {
@@ -2030,10 +2034,10 @@ impl EtTunnel {
         let stdout = std::fs::File::create(&log_path)?;
         let stderr = stdout.try_clone()?;
         command
-            .stdin(Stdio::null())
+            .stdin(Stdio::piped())
             .stdout(Stdio::from(stdout))
             .stderr(Stdio::from(stderr));
-        let child = command.spawn().map_err(|err| {
+        let mut child = command.spawn().map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!(
@@ -2042,7 +2046,11 @@ impl EtTunnel {
                 ),
             )
         })?;
-        Ok(Self { child })
+        let stdin = child.stdin.take();
+        Ok(Self {
+            child,
+            _stdin: stdin,
+        })
     }
 }
 

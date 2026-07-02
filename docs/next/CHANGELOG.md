@@ -4,6 +4,7 @@
 
 ### Fixed
 - Fork: the corporate `et` transport (`et_corp_internal`) now runs `x2ssh` by its full path and single-quotes the x2p socket path, so the `ProxyCommand` works from ssh's minimal shell even though the socket path contains a space.
+- Fork: `herdr --remote` keeps `et`'s stdin open so the persistent tunnel isn't torn down the instant it starts (it was SIGHUP-ing the remote bridge, surfacing as "connection reset by peer" on the first connection).
 
 ## [0.7.3] - 2026-07-02
 
