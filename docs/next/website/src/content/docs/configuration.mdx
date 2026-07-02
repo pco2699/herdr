@@ -126,6 +126,8 @@ et_corp_internal = false
 
 `et_corp_internal` (default `false`) switches the `et` transport to a corporate/VPNless flavour: herdr passes `--ssh-socket`, `--forward-ssh-agent`, and an `x2ssh` `ProxyCommand` for VPNless auth, and reaches the et server on the corporate port. The x2p broker socket is taken from the `X2P_SOCK` environment variable when set. Leave it `false` for bare `et`.
 
+`binary_path` points at a local `herdr` binary (built for the remote's OS/arch) to install when a remote host has no matching `herdr`. When unset, herdr copies the local binary if the remote matches this machine's platform, otherwise downloads the released binary. The `HERDR_REMOTE_BINARY` environment variable overrides it.
+
 Either transport still bootstraps over `ssh` (detecting the platform and installing/matching the remote `herdr` binary); that bootstrap now runs in a single `ssh` round trip for an already-provisioned remote, so it authenticates once instead of once per probe.
 
 When `manage_ssh_config` is enabled, `herdr --remote` writes a private temporary SSH config that includes your `~/.ssh/config` and `/etc/ssh/ssh_config` first, then adds fallback `ServerAliveInterval` and `ServerAliveCountMax` values. Your own keepalive settings win. Herdr also uses a private per-attach OpenSSH control socket to reuse the first authenticated connection. Set `manage_ssh_config = false` to run remote attach through plain `ssh` without Herdr's generated config or control socket.

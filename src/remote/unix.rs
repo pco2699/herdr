@@ -20,8 +20,10 @@ const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
 const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const CURRENT_PROTOCOL: u32 = crate::protocol::PROTOCOL_VERSION;
-const STABLE_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/latest.json";
-const PREVIEW_UPDATE_MANIFEST_URL: &str = "https://herdr.dev/preview.json";
+const STABLE_UPDATE_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/pco2699/herdr/master/website/latest.json";
+const PREVIEW_UPDATE_MANIFEST_URL: &str =
+    "https://raw.githubusercontent.com/pco2699/herdr/master/website/preview.json";
 const REMOTE_BINARY_ENV_VAR: &str = "HERDR_REMOTE_BINARY";
 const SSH_CONTROL_SOCKET_NAME: &str = "ctl";
 pub(crate) const REATTACH_COMMAND_ENV_VAR: &str = "HERDR_REATTACH_COMMAND";
@@ -1008,37 +1010,45 @@ fn parse_installed_remote_probe(stdout: &str) -> InstalledRemoteProbe {
 }
 
 fn remote_binary_override_path() -> io::Result<Option<PathBuf>> {
-    let Some(value) = std::env::var_os(REMOTE_BINARY_ENV_VAR) else {
-        return Ok(None);
-    };
-    if value.is_empty() {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidInput,
-            format!("{REMOTE_BINARY_ENV_VAR} must not be empty"),
-        ));
+    // The environment variable wins over the config so it can be set per-attach.
+    if let Some(value) = std::env::var_os(REMOTE_BINARY_ENV_VAR) {
+        if value.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("{REMOTE_BINARY_ENV_VAR} must not be empty"),
+            ));
+        }
+        return validate_remote_binary_override(PathBuf::from(value), REMOTE_BINARY_ENV_VAR)
+            .map(Some);
     }
 
-    let path = PathBuf::from(value);
+    let configured = crate::config::Config::load()
+        .config
+        .remote
+        .binary_path
+        .filter(|path| !path.trim().is_empty());
+    if let Some(path) = configured {
+        return validate_remote_binary_override(PathBuf::from(path), "[remote] binary_path")
+            .map(Some);
+    }
+
+    Ok(None)
+}
+
+fn validate_remote_binary_override(path: PathBuf, source: &str) -> io::Result<PathBuf> {
     let metadata = fs::metadata(&path).map_err(|err| {
         io::Error::new(
             err.kind(),
-            format!(
-                "failed to inspect {REMOTE_BINARY_ENV_VAR} path {}: {err}",
-                path.display()
-            ),
+            format!("failed to inspect {source} path {}: {err}", path.display()),
         )
     })?;
     if !metadata.is_file() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidInput,
-            format!(
-                "{REMOTE_BINARY_ENV_VAR} path is not a file: {}",
-                path.display()
-            ),
+            format!("{source} path is not a file: {}", path.display()),
         ));
     }
-
-    Ok(Some(path))
+    Ok(path)
 }
 
 fn install_source_description(platform: &RemotePlatform, override_binary: Option<&Path>) -> String {

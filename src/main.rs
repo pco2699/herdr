@@ -348,6 +348,12 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # auth, and reaches the et server on the corp port. Leave false for bare et.
 # et_corp_internal = false
 
+# Path to a local herdr binary (built for the remote's OS/arch) to install on
+# remotes that don't already have a matching herdr. When unset, herdr copies the
+# local binary if the remote matches this machine, otherwise downloads the
+# released binary. Overridden by the HERDR_REMOTE_BINARY env var.
+# binary_path = "/path/to/herdr-linux-x86_64"
+
 # Whether herdr manages the ssh config used for `herdr --remote`.
 # When true (default), herdr runs remote ssh through a generated config that
 # includes your ~/.ssh/config first and adds ServerAliveInterval/

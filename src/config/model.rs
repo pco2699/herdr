@@ -879,6 +879,13 @@ pub struct RemoteConfig {
     /// SSH agent socket, agent forwarding, and an x2ssh ProxyCommand for
     /// VPNless auth. Default: false (bare `et`).
     pub et_corp_internal: bool,
+    /// Path to a local herdr binary to install on remotes that don't already
+    /// have a matching herdr. Built for the remote's OS/arch. When unset, herdr
+    /// copies the local binary if the remote matches this machine's platform,
+    /// otherwise downloads the released binary. Overridden by the
+    /// `HERDR_REMOTE_BINARY` environment variable. Default: unset.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_path: Option<String>,
 }
 
 impl Default for RemoteConfig {
@@ -887,6 +894,7 @@ impl Default for RemoteConfig {
             transport: RemoteTransport::default(),
             manage_ssh_config: true,
             et_corp_internal: false,
+            binary_path: None,
         }
     }
 }

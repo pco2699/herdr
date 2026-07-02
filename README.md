@@ -69,6 +69,21 @@ It also fixes repeated auth prompts: the remote bootstrap (platform + binary + v
 checks) now runs in a **single ssh round trip** for an already-provisioned host, so you get
 one authentication prompt (e.g. one 2FA challenge) instead of one per probe.
 
+**Installing your fork on the remote:** when a remote host has no matching `herdr`, herdr
+provisions one to `~/.local/bin/herdr`. The source is, in order: the `HERDR_REMOTE_BINARY`
+env var, then `[remote] binary_path` in config, then your local binary if the remote's OS/arch
+matches this machine, then a download from this fork's release manifest
+(`raw.githubusercontent.com/pco2699/herdr/master/website/latest.json` → `pco2699/herdr`
+releases). To force a specific build (e.g. cross-arch from a macOS laptop to a Linux
+devserver):
+
+```toml
+[remote]
+binary_path = "/path/to/herdr-linux-x86_64"   # a fork build for the remote's platform
+```
+
+or `HERDR_REMOTE_BINARY=/path/... herdr --remote <host>` for a one-off.
+
 **Requirements:** `et` must be installed on both the local machine and the remote host.
 
 **Usage** (unchanged):
