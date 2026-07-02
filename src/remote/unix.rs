@@ -1966,7 +1966,10 @@ fn et_tunnel_command(
             .arg("--forward-ssh-agent")
             .arg("--ssh-option")
             .arg(format!(
-                "ProxyCommand=x2ssh --uds_path={} --sshport=0 --tunnel --fallback {target}",
+                // Full path to x2ssh (ssh runs ProxyCommand through a minimal
+                // /bin/sh PATH), and single-quote the socket path since it
+                // contains a space (".../Application Support/...").
+                "ProxyCommand=/usr/local/bin/x2ssh --uds_path='{}' --sshport=0 --tunnel --fallback {target}",
                 x2p_socket_path()
             ))
             .arg("--ssh-option")
@@ -2581,12 +2584,11 @@ mod tests {
             .collect::<Vec<_>>();
         assert!(command.iter().any(|arg| arg == "--ssh-socket"));
         assert!(command.iter().any(|arg| arg == "--forward-ssh-agent"));
-        assert!(
-            command
-                .iter()
-                .any(|arg| arg.starts_with("ProxyCommand=x2ssh ")
-                    && arg.contains("--fallback myhost"))
-        );
+        assert!(command.iter().any(|arg| {
+            arg.starts_with("ProxyCommand=/usr/local/bin/x2ssh ")
+                && arg.contains("--uds_path='")
+                && arg.contains("--fallback myhost")
+        }));
         assert!(command.iter().any(|arg| arg == "HostName=myhost"));
         // et server reached on the corp port; tunnel + bridge still present.
         assert!(command.contains(&format!("myhost:{ET_CORP_SERVER_PORT}")));
