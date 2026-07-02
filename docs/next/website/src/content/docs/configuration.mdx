@@ -116,12 +116,15 @@ Remote attach uses Eternal Terminal for its data connection by default, and mana
 [remote]
 transport = "et"
 manage_ssh_config = true
+et_corp_internal = false
 ```
 
 `transport` selects how the persistent `herdr --remote` data connection is carried:
 
 - `"et"` (default) uses [Eternal Terminal](https://eternalterminal.dev/). `et` must be installed on both the local machine and the remote host. Herdr starts one persistent, auto-reconnecting `et` session that forwards a loopback TCP port to a small remote bridge over the server's client socket, so the connection survives network drops and suspends. The remote TCP port is derived deterministically from the session name.
 - `"ssh"` uses a plain `ssh` stdio bridge (one `ssh` process per client connection), the original behavior.
+
+`et_corp_internal` (default `false`) switches the `et` transport to a corporate/VPNless flavour: herdr passes `--ssh-socket`, `--forward-ssh-agent`, and an `x2ssh` `ProxyCommand` for VPNless auth, and reaches the et server on the corporate port. The x2p broker socket is taken from the `X2P_SOCK` environment variable when set. Leave it `false` for bare `et`.
 
 Either transport still bootstraps over `ssh` (detecting the platform and installing/matching the remote `herdr` binary); that bootstrap now runs in a single `ssh` round trip for an already-provisioned remote, so it authenticates once instead of once per probe.
 

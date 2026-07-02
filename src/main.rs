@@ -343,6 +343,11 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # stdio bridge instead. Bootstrap (install/version checks) always uses ssh.
 # transport = "et"
 
+# Use the corporate/VPNless flavour of the et transport. When true, herdr adds
+# an SSH agent socket, agent forwarding, and an x2ssh ProxyCommand for VPNless
+# auth, and reaches the et server on the corp port. Leave false for bare et.
+# et_corp_internal = false
+
 # Whether herdr manages the ssh config used for `herdr --remote`.
 # When true (default), herdr runs remote ssh through a generated config that
 # includes your ~/.ssh/config first and adds ServerAliveInterval/

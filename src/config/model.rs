@@ -875,6 +875,10 @@ pub struct RemoteConfig {
     /// Add keepalive fallbacks and private connection reuse for the ssh
     /// transport and bootstrap. Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
+    /// Use the corporate/VPNless flavour of the `et` transport, injecting the
+    /// SSH agent socket, agent forwarding, and an x2ssh ProxyCommand for
+    /// VPNless auth. Default: false (bare `et`).
+    pub et_corp_internal: bool,
 }
 
 impl Default for RemoteConfig {
@@ -882,6 +886,7 @@ impl Default for RemoteConfig {
         Self {
             transport: RemoteTransport::default(),
             manage_ssh_config: true,
+            et_corp_internal: false,
         }
     }
 }

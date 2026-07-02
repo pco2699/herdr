@@ -86,10 +86,19 @@ herdr --remote user@host --session work
 transport = "et"
 # keepalive + connection reuse for the ssh bootstrap (unchanged upstream option)
 manage_ssh_config = true
+# corporate/VPNless et (SSH agent socket + forwarding + x2ssh ProxyCommand,
+# et server on port 8080). Leave false for bare et on its default port.
+et_corp_internal = false
 ```
 
 Set `transport = "ssh"` to fall back to the original behavior. Bootstrap always uses ssh
 (which `et` itself uses for its handshake).
+
+**Corporate / VPNless (`et_corp_internal = true`):** for environments that reach hosts through
+an x2p auth broker, herdr invokes `et` with `--ssh-socket ~/.fb-sks-agent/agent.sock`,
+`--forward-ssh-agent`, an `x2ssh` `ProxyCommand`, and the et server port `8080`. The x2p broker
+socket is read from `$X2P_SOCK` (falling back to the macOS default path). With the flag `false`,
+herdr runs bare `et` on its default port.
 
 ---
 

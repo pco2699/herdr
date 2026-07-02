@@ -192,6 +192,7 @@ pub(crate) fn run_remote(remote: RemoteLaunch) -> io::Result<()> {
                 &session_name,
                 local_port,
                 remote_port,
+                loaded.config.remote.et_corp_internal,
             )?;
             let _bridge = EtLocalBridge::start(local_socket.clone(), local_port)?;
             run_client_process(&local_socket, &reattach_command, remote.keybindings)
@@ -1855,6 +1856,8 @@ impl Drop for SshStdioBridge {
 }
 
 const ET_TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
+/// Port the et server listens on for the corporate/VPNless transport.
+const ET_CORP_SERVER_PORT: u16 = 8080;
 
 /// Deterministic remote TCP port for the Eternal Terminal data tunnel.
 ///
@@ -1893,16 +1896,59 @@ fn remote_tcp_bridge_command(
     command
 }
 
+fn home_dir() -> PathBuf {
+    std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .unwrap_or_default()
+}
+
+/// SSH agent socket used by the corporate `et` transport.
+fn sks_agent_socket_path() -> String {
+    home_dir()
+        .join(".fb-sks-agent/agent.sock")
+        .to_string_lossy()
+        .into_owned()
+}
+
+/// VPNless x2p auth-broker socket for the corporate `et` transport. Honors the
+/// `X2P_SOCK` environment variable, falling back to the macOS default path.
+fn x2p_socket_path() -> String {
+    if let Some(sock) = std::env::var_os("X2P_SOCK") {
+        return sock.to_string_lossy().into_owned();
+    }
+    home_dir()
+        .join("Library/Application Support/fb-x2pagentd/x2pagent_http1.sock")
+        .to_string_lossy()
+        .into_owned()
+}
+
 fn et_tunnel_command(
     target: &str,
     remote_herdr: &RemoteHerdr,
     session_name: &str,
     local_port: u16,
     remote_port: u16,
+    corp_internal: bool,
 ) -> Command {
     let mut command = Command::new("et");
+    if corp_internal {
+        // VPNless corporate auth: forward the SSH agent and reach the host via
+        // the x2ssh ProxyCommand; the et server listens on the corp port.
+        command
+            .arg("--ssh-socket")
+            .arg(sks_agent_socket_path())
+            .arg("--forward-ssh-agent")
+            .arg("--ssh-option")
+            .arg(format!(
+                "ProxyCommand=x2ssh --uds_path={} --sshport=0 --tunnel --fallback {target}",
+                x2p_socket_path()
+            ))
+            .arg("--ssh-option")
+            .arg(format!("HostName={target}"));
+    } else {
+        command.arg(target);
+    }
     command
-        .arg(target)
         .arg("-t")
         .arg(format!("{local_port}:{remote_port}"))
         .arg("-c")
@@ -1911,6 +1957,9 @@ fn et_tunnel_command(
             session_name,
             remote_port,
         ));
+    if corp_internal {
+        command.arg(format!("{target}:{ET_CORP_SERVER_PORT}"));
+    }
     command
 }
 
@@ -1927,9 +1976,16 @@ impl EtTunnel {
         session_name: &str,
         local_port: u16,
         remote_port: u16,
+        corp_internal: bool,
     ) -> io::Result<Self> {
-        let mut command =
-            et_tunnel_command(target, remote_herdr, session_name, local_port, remote_port);
+        let mut command = et_tunnel_command(
+            target,
+            remote_herdr,
+            session_name,
+            local_port,
+            remote_port,
+            corp_internal,
+        );
         tracing::debug!(?command, "starting eternal terminal tunnel");
         command
             .stdin(Stdio::null())
@@ -2459,7 +2515,7 @@ mod tests {
             os: "linux",
             arch: "x86_64",
         });
-        let command = et_tunnel_command("user@host", &remote_herdr, "default", 12000, 49222)
+        let command = et_tunnel_command("user@host", &remote_herdr, "default", 12000, 49222, false)
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
@@ -2467,6 +2523,35 @@ mod tests {
         assert!(command.contains(&"-t".to_string()));
         assert!(command.contains(&"12000:49222".to_string()));
         assert!(command.contains(&"-c".to_string()));
+        assert!(command
+            .iter()
+            .any(|arg| arg.contains("remote-client-bridge-tcp --port 49222")));
+        // Bare et: no corporate auth flags.
+        assert!(!command.iter().any(|arg| arg == "--forward-ssh-agent"));
+    }
+
+    #[test]
+    fn et_tunnel_command_corp_internal_injects_x2p_flags() {
+        let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
+            os: "linux",
+            arch: "x86_64",
+        });
+        let command = et_tunnel_command("myhost", &remote_herdr, "default", 12000, 49222, true)
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        assert!(command.iter().any(|arg| arg == "--ssh-socket"));
+        assert!(command.iter().any(|arg| arg == "--forward-ssh-agent"));
+        assert!(
+            command
+                .iter()
+                .any(|arg| arg.starts_with("ProxyCommand=x2ssh ")
+                    && arg.contains("--fallback myhost"))
+        );
+        assert!(command.iter().any(|arg| arg == "HostName=myhost"));
+        // et server reached on the corp port; tunnel + bridge still present.
+        assert!(command.contains(&format!("myhost:{ET_CORP_SERVER_PORT}")));
+        assert!(command.contains(&"12000:49222".to_string()));
         assert!(command
             .iter()
             .any(|arg| arg.contains("remote-client-bridge-tcp --port 49222")));
