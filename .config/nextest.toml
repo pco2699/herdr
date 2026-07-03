@@ -1,12 +1,8 @@
-# Integration tests (tests/*.rs) spawn real PTYs, Unix sockets, and background
-# servers, so they are timing-sensitive under the heavy parallelism of CI
-# runners — e.g. asserting that pane output appears within a few seconds can miss
-# its deadline purely from contention. Retry those a couple of times so transient
-# load doesn't fail the whole run. Unit tests keep retries = 0 so genuine
-# flakiness there stays visible.
+# Many tests spawn real PTYs, shells, Unix sockets, and background servers and
+# assert that output/files appear within a few seconds. Under the heavy
+# parallelism of CI (and release `just check`) those deadlines can be missed
+# purely from contention, and such tests live both in tests/*.rs and as bin unit
+# tests. Retry every test a couple of times: retries only rescue non-deterministic
+# flakiness — a genuinely broken test fails all attempts and is still caught.
 [profile.default]
-retries = 0
-
-[[profile.default.overrides]]
-filter = "kind(test)"
 retries = 2
