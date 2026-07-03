@@ -875,9 +875,9 @@ pub struct RemoteConfig {
     /// Add keepalive fallbacks and private connection reuse for the ssh
     /// transport and bootstrap. Set false to run plain ssh unchanged. Default: true.
     pub manage_ssh_config: bool,
-    /// Use the corporate/VPNless flavour of the `et` transport, injecting the
-    /// SSH agent socket, agent forwarding, and an x2ssh ProxyCommand for
-    /// VPNless auth. Default: false (bare `et`).
+    /// Use the corporate/VPNless flavour of the `et` transport by running
+    /// `x2ssh -et` (x2ssh owns the transport and tunnels et's data channel over
+    /// x2p) instead of bare `et`. Default: false (bare `et`).
     pub et_corp_internal: bool,
     /// Path to a local herdr binary to install on remotes that don't already
     /// have a matching herdr. Built for the remote's OS/arch. When unset, herdr

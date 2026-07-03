@@ -1871,8 +1871,6 @@ impl Drop for SshStdioBridge {
 }
 
 const ET_TUNNEL_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
-/// Port the et server listens on for the corporate/VPNless transport.
-const ET_CORP_SERVER_PORT: u16 = 8080;
 
 /// Deterministic remote TCP port for the Eternal Terminal data tunnel.
 ///
@@ -1911,32 +1909,6 @@ fn remote_tcp_bridge_command(
     command
 }
 
-fn home_dir() -> PathBuf {
-    std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_default()
-}
-
-/// SSH agent socket used by the corporate `et` transport.
-fn sks_agent_socket_path() -> String {
-    home_dir()
-        .join(".fb-sks-agent/agent.sock")
-        .to_string_lossy()
-        .into_owned()
-}
-
-/// VPNless x2p auth-broker socket for the corporate `et` transport. Honors the
-/// `X2P_SOCK` environment variable, falling back to the macOS default path.
-fn x2p_socket_path() -> String {
-    if let Some(sock) = std::env::var_os("X2P_SOCK") {
-        return sock.to_string_lossy().into_owned();
-    }
-    home_dir()
-        .join("Library/Application Support/fb-x2pagentd/x2pagent_http1.sock")
-        .to_string_lossy()
-        .into_owned()
-}
-
 /// Render a spawned `et` Command's args as a copy-pasteable string for logs.
 fn et_command_display(command: &Command) -> String {
     command
@@ -1953,6 +1925,17 @@ fn et_command_display(command: &Command) -> String {
         .join(" ")
 }
 
+/// Resolve the `x2ssh` wrapper used for the corporate/VPNless et transport,
+/// preferring the well-known absolute path and falling back to `PATH`.
+fn x2ssh_program() -> String {
+    const WELL_KNOWN: &str = "/usr/local/bin/x2ssh";
+    if Path::new(WELL_KNOWN).exists() {
+        WELL_KNOWN.to_string()
+    } else {
+        "x2ssh".to_string()
+    }
+}
+
 fn et_tunnel_command(
     target: &str,
     remote_herdr: &RemoteHerdr,
@@ -1961,40 +1944,38 @@ fn et_tunnel_command(
     remote_port: u16,
     corp_internal: bool,
 ) -> Command {
-    let mut command = Command::new("et");
+    let bridge = remote_tcp_bridge_command(remote_herdr, session_name, remote_port);
     if corp_internal {
-        // VPNless corporate auth: forward the SSH agent and reach the host via
-        // the x2ssh ProxyCommand; the et server listens on the corp port.
+        // VPNless corporate transport: run `x2ssh -et` rather than bare `et`.
+        //
+        // x2ssh is the parent process and spawns `et` itself, so et's
+        // persistent data channel (and the `--tunnel` port-forward it carries)
+        // travels through the x2p tunnel that x2ssh sets up. Running bare `et`
+        // with `ProxyCommand=x2ssh` only tunnels et's SSH *control* channel;
+        // et's separate data TCP to the etserver never traverses VPNless, so
+        // the forwarded port accepts locally and is then reset before it ever
+        // reaches the remote bridge. Letting x2ssh own the transport (like the
+        // enkaku/`ek` corp path) also uses the SKS agent cert, avoiding a
+        // second 2FA prompt. x2ssh discovers the x2p agent socket on its own.
+        let mut command = Command::new(x2ssh_program());
         command
-            .arg("--ssh-socket")
-            .arg(sks_agent_socket_path())
-            .arg("--forward-ssh-agent")
-            .arg("--ssh-option")
-            .arg(format!(
-                // Full path to x2ssh (ssh runs ProxyCommand through a minimal
-                // /bin/sh PATH), and single-quote the socket path since it
-                // contains a space (".../Application Support/...").
-                "ProxyCommand=/usr/local/bin/x2ssh --uds_path='{}' --sshport=0 --tunnel --fallback {target}",
-                x2p_socket_path()
-            ))
-            .arg("--ssh-option")
-            .arg(format!("HostName={target}"));
+            .arg("-et")
+            .arg(target)
+            .arg("--tunnel")
+            .arg(format!("{local_port}:{remote_port}"))
+            .arg("--command")
+            .arg(bridge);
+        command
     } else {
-        command.arg(target);
+        let mut command = Command::new("et");
+        command
+            .arg(target)
+            .arg("-t")
+            .arg(format!("{local_port}:{remote_port}"))
+            .arg("-c")
+            .arg(bridge);
+        command
     }
-    command
-        .arg("-t")
-        .arg(format!("{local_port}:{remote_port}"))
-        .arg("-c")
-        .arg(remote_tcp_bridge_command(
-            remote_herdr,
-            session_name,
-            remote_port,
-        ));
-    if corp_internal {
-        command.arg(format!("{target}:{ET_CORP_SERVER_PORT}"));
-    }
-    command
 }
 
 /// Persistent Eternal Terminal session that forwards `local_port` to the remote
@@ -2035,7 +2016,11 @@ impl EtTunnel {
              (corp_internal={corp_internal}); et output -> {}",
             log_path.display()
         );
-        eprintln!("herdr: running: et {}", et_command_display(&command));
+        eprintln!(
+            "herdr: running: {} {}",
+            command.get_program().to_string_lossy(),
+            et_command_display(&command)
+        );
         let stdout = std::fs::File::create(&log_path)?;
         let stderr = stdout.try_clone()?;
         command
@@ -2673,29 +2658,32 @@ mod tests {
     }
 
     #[test]
-    fn et_tunnel_command_corp_internal_injects_x2p_flags() {
+    fn et_tunnel_command_corp_internal_uses_x2ssh_et() {
         let remote_herdr = RemoteHerdr::for_platform(RemotePlatform {
             os: "linux",
             arch: "x86_64",
         });
-        let command = et_tunnel_command("myhost", &remote_herdr, "default", 12000, 49222, true)
+        let raw = et_tunnel_command("myhost", &remote_herdr, "default", 12000, 49222, true);
+        // Corp/VPNless path runs `x2ssh -et`, letting x2ssh own the transport
+        // so et's data channel (and its tunnel) traverse the x2p tunnel.
+        assert!(raw.get_program().to_string_lossy().ends_with("x2ssh"));
+        let command = raw
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
             .collect::<Vec<_>>();
-        assert!(command.iter().any(|arg| arg == "--ssh-socket"));
-        assert!(command.iter().any(|arg| arg == "--forward-ssh-agent"));
-        assert!(command.iter().any(|arg| {
-            arg.starts_with("ProxyCommand=/usr/local/bin/x2ssh ")
-                && arg.contains("--uds_path='")
-                && arg.contains("--fallback myhost")
-        }));
-        assert!(command.iter().any(|arg| arg == "HostName=myhost"));
-        // et server reached on the corp port; tunnel + bridge still present.
-        assert!(command.contains(&format!("myhost:{ET_CORP_SERVER_PORT}")));
+        assert!(command.contains(&"-et".to_string()));
+        assert!(command.contains(&"myhost".to_string()));
+        assert!(command.contains(&"--tunnel".to_string()));
         assert!(command.contains(&"12000:49222".to_string()));
+        assert!(command.contains(&"--command".to_string()));
         assert!(command
             .iter()
             .any(|arg| arg.contains("remote-client-bridge-tcp --port 49222")));
+        // x2ssh discovers the x2p transport itself: no manual ProxyCommand,
+        // agent-socket, or hardcoded corp port injected by herdr.
+        assert!(!command.iter().any(|arg| arg.starts_with("ProxyCommand=")));
+        assert!(!command.iter().any(|arg| arg == "--ssh-socket"));
+        assert!(!command.iter().any(|arg| arg == "--forward-ssh-agent"));
     }
 
     #[test]
