@@ -2200,32 +2200,84 @@ fn et_bridge_connection(local: UnixStream, local_port: u16) -> io::Result<()> {
 
 /// Remote side of the Eternal Terminal transport: accept TCP connections on the
 /// forwarded loopback port and bridge each to the local `herdr-client.sock`.
+/// Append a diagnostic line to a remote-side log. et does not reliably relay the
+/// `-c` command's stdout/stderr, so we write our own file the user can inspect.
+fn remote_bridge_log(msg: &str) {
+    let path = std::env::temp_dir().join("herdr-remote-bridge.log");
+    if let Ok(mut file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+    {
+        let _ = writeln!(file, "[pid {}] {msg}", std::process::id());
+    }
+}
+
 pub(crate) fn run_remote_client_bridge_tcp(port: u16) -> io::Result<()> {
-    ensure_remote_server_running()?;
-
-    let socket_path = crate::server::socket_paths::client_socket_path();
-    let listener = std::net::TcpListener::bind(("127.0.0.1", port))?;
-
-    for stream in listener.incoming() {
-        let tcp = match stream {
-            Ok(tcp) => tcp,
-            Err(err) => {
-                eprintln!("herdr: remote tcp bridge accept failed: {err}");
-                continue;
-            }
-        };
-        let socket_path = socket_path.clone();
-        thread::spawn(move || {
-            if let Err(err) = remote_tcp_bridge_connection(tcp, &socket_path) {
-                eprintln!("herdr: remote tcp bridge connection failed: {err}");
-            }
-        });
+    remote_bridge_log(&format!("starting; port={port}"));
+    if let Err(err) = ensure_remote_server_running() {
+        remote_bridge_log(&format!("ensure_remote_server_running failed: {err}"));
+        return Err(err);
     }
 
+    let socket_path = crate::server::socket_paths::client_socket_path();
+    remote_bridge_log(&format!(
+        "server ready; client socket={}",
+        socket_path.display()
+    ));
+
+    // et may forward to either loopback family depending on how it resolves the
+    // remote endpoint, so bind both IPv4 and IPv6 loopback on the same port.
+    let addrs = [
+        std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
+        std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
+    ];
+    let mut handles = Vec::new();
+    for addr in addrs {
+        match std::net::TcpListener::bind(addr) {
+            Ok(listener) => {
+                remote_bridge_log(&format!("listening on {addr}"));
+                let socket_path = socket_path.clone();
+                handles.push(thread::spawn(move || {
+                    for stream in listener.incoming() {
+                        match stream {
+                            Ok(tcp) => {
+                                remote_bridge_log(&format!("accepted connection on {addr}"));
+                                let socket_path = socket_path.clone();
+                                thread::spawn(move || {
+                                    match remote_tcp_bridge_connection(tcp, &socket_path) {
+                                        Ok(()) => remote_bridge_log("connection closed cleanly"),
+                                        Err(err) => {
+                                            remote_bridge_log(&format!("connection failed: {err}"))
+                                        }
+                                    }
+                                });
+                            }
+                            Err(err) => {
+                                remote_bridge_log(&format!("accept failed on {addr}: {err}"))
+                            }
+                        }
+                    }
+                }));
+            }
+            Err(err) => remote_bridge_log(&format!("bind {addr} failed: {err}")),
+        }
+    }
+
+    if handles.is_empty() {
+        remote_bridge_log("no loopback listeners bound; exiting");
+        return Err(io::Error::other(
+            "remote tcp bridge could not bind any loopback address",
+        ));
+    }
+    for handle in handles {
+        let _ = handle.join();
+    }
     Ok(())
 }
 
 fn remote_tcp_bridge_connection(tcp: std::net::TcpStream, socket_path: &Path) -> io::Result<()> {
+    remote_bridge_log("connecting to client socket");
     let socket = UnixStream::connect(socket_path).map_err(|err| {
         io::Error::new(
             err.kind(),
