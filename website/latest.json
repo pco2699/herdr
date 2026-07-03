@@ -1,14 +1,24 @@
 {
-  "version": "0.7.3",
+  "version": "0.7.4",
   "protocol": 15,
-  "notes": "### Changed\n- Fork: `herdr --remote` logs the exact `et` command and captures `et`'s stdout/stderr to a temp-dir log file, so Eternal Terminal connection failures are diagnosable.",
+  "notes": "### Fixed\n- Fork: the corporate `et` transport (`et_corp_internal`) now runs `x2ssh` by its full path and single-quotes the x2p socket path, so the `ProxyCommand` works from ssh's minimal shell even though the socket path contains a space.\n- Fork: `herdr --remote` keeps `et`'s stdin open so the persistent tunnel isn't torn down the instant it starts (it was SIGHUP-ing the remote bridge, surfacing as \"connection reset by peer\" on the first connection).\n- Fork: `herdr --remote` waits for the et tunnel's remote bridge to bind before connecting the client, avoiding a startup race that reset the first connection (the et port-forward is live before the remote `-c` bridge is).\n- Fork: the remote `remote-client-bridge-tcp` now binds both IPv4 and IPv6 loopback (et may forward to `::1`) and logs to a remote temp-dir file for diagnosing the et data path.",
   "assets": {
-    "linux-x86_64": "https://github.com/pco2699/herdr/releases/download/v0.7.3/herdr-linux-x86_64",
-    "linux-aarch64": "https://github.com/pco2699/herdr/releases/download/v0.7.3/herdr-linux-aarch64",
-    "macos-x86_64": "https://github.com/pco2699/herdr/releases/download/v0.7.3/herdr-macos-x86_64",
-    "macos-aarch64": "https://github.com/pco2699/herdr/releases/download/v0.7.3/herdr-macos-aarch64"
+    "linux-x86_64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-linux-x86_64",
+    "linux-aarch64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-linux-aarch64",
+    "macos-x86_64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-macos-x86_64",
+    "macos-aarch64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-macos-aarch64"
   },
   "releases": {
+    "0.7.4": {
+      "notes": "### Fixed\n- Fork: the corporate `et` transport (`et_corp_internal`) now runs `x2ssh` by its full path and single-quotes the x2p socket path, so the `ProxyCommand` works from ssh's minimal shell even though the socket path contains a space.\n- Fork: `herdr --remote` keeps `et`'s stdin open so the persistent tunnel isn't torn down the instant it starts (it was SIGHUP-ing the remote bridge, surfacing as \"connection reset by peer\" on the first connection).\n- Fork: `herdr --remote` waits for the et tunnel's remote bridge to bind before connecting the client, avoiding a startup race that reset the first connection (the et port-forward is live before the remote `-c` bridge is).\n- Fork: the remote `remote-client-bridge-tcp` now binds both IPv4 and IPv6 loopback (et may forward to `::1`) and logs to a remote temp-dir file for diagnosing the et data path.",
+      "protocol": 15,
+      "assets": {
+        "linux-x86_64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-linux-x86_64",
+        "linux-aarch64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-linux-aarch64",
+        "macos-x86_64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-macos-x86_64",
+        "macos-aarch64": "https://github.com/pco2699/herdr/releases/download/v0.7.4/herdr-macos-aarch64"
+      }
+    },
     "0.7.3": {
       "notes": "### Changed\n- Fork: `herdr --remote` logs the exact `et` command and captures `et`'s stdout/stderr to a temp-dir log file, so Eternal Terminal connection failures are diagnosable.",
       "protocol": 15,
