@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::fs::{self, File};
 use std::io::{self, IsTerminal, Write as _};
+use std::os::fd::OwnedFd;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
@@ -1978,14 +1979,64 @@ fn et_tunnel_command(
     }
 }
 
+/// Open a pty pair (master, slave) via `posix_openpt` (in libc proper, so no
+/// libutil linkage). Both are opened `O_NOCTTY` so neither becomes anyone's
+/// controlling terminal; the slave's window size is seeded from the real
+/// terminal so `et` sees a sane geometry.
+fn open_et_pty() -> io::Result<(OwnedFd, OwnedFd)> {
+    use std::os::fd::{AsRawFd, FromRawFd};
+    unsafe {
+        let master = libc::posix_openpt(libc::O_RDWR | libc::O_NOCTTY);
+        if master < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let master = OwnedFd::from_raw_fd(master);
+        if libc::grantpt(master.as_raw_fd()) != 0 || libc::unlockpt(master.as_raw_fd()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        // ptsname is not reentrant, but this runs once at tunnel startup.
+        let name = libc::ptsname(master.as_raw_fd());
+        if name.is_null() {
+            return Err(io::Error::other("ptsname returned null"));
+        }
+        let slave = libc::open(name, libc::O_RDWR | libc::O_NOCTTY);
+        if slave < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let slave = OwnedFd::from_raw_fd(slave);
+        let ws = current_terminal_winsize();
+        let _ = libc::ioctl(slave.as_raw_fd(), libc::TIOCSWINSZ, &ws);
+        Ok((master, slave))
+    }
+}
+
+/// Best-effort window size copied from stdout, falling back to 80x24.
+fn current_terminal_winsize() -> libc::winsize {
+    use std::os::fd::AsRawFd;
+    let mut ws = libc::winsize {
+        ws_row: 24,
+        ws_col: 80,
+        ws_xpixel: 0,
+        ws_ypixel: 0,
+    };
+    unsafe {
+        let mut probe: libc::winsize = std::mem::zeroed();
+        if libc::ioctl(io::stdout().as_raw_fd(), libc::TIOCGWINSZ, &mut probe) == 0
+            && probe.ws_col > 0
+        {
+            ws = probe;
+        }
+    }
+    ws
+}
+
 /// Persistent Eternal Terminal session that forwards `local_port` to the remote
 /// TCP bridge and runs that bridge as its command. Killed on drop.
 struct EtTunnel {
     child: std::process::Child,
-    // Held open so et never sees stdin EOF; otherwise it tears down the session
-    // (SIGHUP-ing the remote `-c` bridge) the moment it starts, which surfaces as
-    // "connection reset by peer" on the first client connection.
-    _stdin: Option<std::process::ChildStdin>,
+    // Kept open so the slave (et's stdio) never sees EOF and the pty stays alive
+    // for the life of the tunnel. Dropped last, after the child is reaped.
+    _pty_master: OwnedFd,
 }
 
 impl EtTunnel {
@@ -2021,13 +2072,21 @@ impl EtTunnel {
             command.get_program().to_string_lossy(),
             et_command_display(&command)
         );
-        let stdout = std::fs::File::create(&log_path)?;
-        let stderr = stdout.try_clone()?;
+
+        // et is a *terminal* program: with redirected (non-tty) stdio it aborts
+        // ("Connectivity is OK but ET failed"). Give it a pty on stdio so
+        // isatty() passes, but do NOT make the pty its controlling terminal
+        // (no setsid) — the child keeps our controlling terminal, so ssh's
+        // interactive 2FA/Duo prompt still reaches the user via /dev/tty. et's
+        // own terminal output goes to the pty and we drain it to the log.
+        let (master, slave) = open_et_pty()?;
+        let child_stdin = slave.try_clone()?;
+        let child_stdout = slave.try_clone()?;
         command
-            .stdin(Stdio::piped())
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr));
-        let mut child = command.spawn().map_err(|err| {
+            .stdin(Stdio::from(File::from(child_stdin)))
+            .stdout(Stdio::from(File::from(child_stdout)))
+            .stderr(Stdio::from(File::from(slave)));
+        let child = command.spawn().map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!(
@@ -2036,10 +2095,32 @@ impl EtTunnel {
                 ),
             )
         })?;
-        let stdin = child.stdin.take();
+
+        // Drain the pty master into the log so et never blocks on a full pty
+        // buffer and its output stays inspectable. Stops at EOF when et exits.
+        if let Ok(drain) = master.try_clone() {
+            thread::spawn(move || {
+                use io::Read as _;
+                let mut reader = File::from(drain);
+                let Ok(mut log) = File::create(&log_path) else {
+                    return;
+                };
+                let mut buf = [0u8; 4096];
+                loop {
+                    match reader.read(&mut buf) {
+                        Ok(0) | Err(_) => break,
+                        Ok(n) => {
+                            let _ = log.write_all(&buf[..n]);
+                            let _ = log.flush();
+                        }
+                    }
+                }
+            });
+        }
+
         Ok(Self {
             child,
-            _stdin: stdin,
+            _pty_master: master,
         })
     }
 }
