@@ -17,6 +17,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
+/// How often a bridge that found its port already held retries binding so it
+/// can take over once the previous (lingering) bridge frees the port.
+const BRIDGE_TAKEOVER_POLL: Duration = Duration::from_secs(1);
 const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
 const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
 const REMOTE_SERVER_SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(100);
@@ -2292,18 +2295,114 @@ pub(crate) fn run_remote_client_bridge_tcp(port: u16) -> io::Result<()> {
         socket_path.display()
     ));
 
-    // et may forward to either loopback family depending on how it resolves the
-    // remote endpoint, so bind both IPv4 and IPv6 loopback on the same port.
+    // Bind the deterministic loopback port and serve forever. If it's already
+    // held, don't exit — that would make the et `--command` die and tear down
+    // this session. A held port almost always means a lingering bridge from a
+    // previous et session (et keeps remote sessions alive after the local
+    // client goes away, leaving its `--command` bridge orphaned). That bridge
+    // points at the same server client socket, so et's tunnel is already served
+    // correctly through it; we just stand by and retry so we take over cleanly
+    // if it later exits and frees the port.
+    let mut logged_standby = false;
+    loop {
+        let (handles, errors) = bind_bridge_listeners(port, &socket_path);
+        if !handles.is_empty() {
+            write_bridge_pidfile(&socket_path, port);
+            for handle in handles {
+                let _ = handle.join();
+            }
+            return Ok(());
+        }
+        // Nothing bound. Any error other than "address in use" is fatal.
+        if errors.is_empty()
+            || errors
+                .iter()
+                .any(|err| err.kind() != io::ErrorKind::AddrInUse)
+        {
+            remote_bridge_log("no loopback listeners bound; exiting");
+            return Err(io::Error::other(
+                "remote tcp bridge could not bind any loopback address",
+            ));
+        }
+        // The port is held. If our pidfile names a live bridge we recorded,
+        // it's a stale one from a previous et session (its local client is
+        // gone) — take the port over by terminating it, then rebind. Otherwise
+        // stand by without killing anything: the existing listener already
+        // serves et's tunnel through the same client socket, and if it later
+        // exits we take over on the next poll.
+        match read_bridge_pidfile(&socket_path, port) {
+            Some(stale_pid)
+                if stale_pid != std::process::id() as i32 && process_is_live(stale_pid) =>
+            {
+                remote_bridge_log(&format!(
+                    "port {port} held by stale bridge pid {stale_pid}; taking over"
+                ));
+                unsafe {
+                    libc::kill(stale_pid, libc::SIGTERM);
+                }
+            }
+            _ => {
+                if !logged_standby {
+                    remote_bridge_log(&format!(
+                        "port {port} already served by an existing bridge; standing by"
+                    ));
+                    logged_standby = true;
+                }
+            }
+        }
+        thread::sleep(BRIDGE_TAKEOVER_POLL);
+    }
+}
+
+/// User-owned pidfile (next to the client socket, not world-writable temp) that
+/// records which bridge process currently owns a given loopback port, so a later
+/// bridge can recognize and take over from a stale predecessor.
+fn bridge_pidfile(socket_path: &Path, port: u16) -> PathBuf {
+    let dir = socket_path
+        .parent()
+        .map(Path::to_path_buf)
+        .unwrap_or_else(std::env::temp_dir);
+    dir.join(format!("remote-bridge-{port}.pid"))
+}
+
+fn write_bridge_pidfile(socket_path: &Path, port: u16) {
+    let _ = std::fs::write(
+        bridge_pidfile(socket_path, port),
+        std::process::id().to_string(),
+    );
+}
+
+fn read_bridge_pidfile(socket_path: &Path, port: u16) -> Option<i32> {
+    std::fs::read_to_string(bridge_pidfile(socket_path, port))
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// True if `pid` names a live process we can signal (signal 0 is an existence
+/// probe). `kill` is uid-restricted, so this can only ever target our own
+/// processes.
+fn process_is_live(pid: i32) -> bool {
+    pid > 0 && unsafe { libc::kill(pid, 0) == 0 }
+}
+
+/// Bind IPv4 and IPv6 loopback on `port` (et may forward to either family) and
+/// spawn an accept loop for each that bridges connections to the client socket.
+/// Returns the serving thread handles plus any bind errors so the caller can
+/// distinguish "port already taken" from a fatal failure.
+fn bind_bridge_listeners(port: u16, socket_path: &Path) -> (Vec<JoinHandle<()>>, Vec<io::Error>) {
     let addrs = [
         std::net::SocketAddr::from((std::net::Ipv4Addr::LOCALHOST, port)),
         std::net::SocketAddr::from((std::net::Ipv6Addr::LOCALHOST, port)),
     ];
     let mut handles = Vec::new();
+    let mut errors = Vec::new();
     for addr in addrs {
         match std::net::TcpListener::bind(addr) {
             Ok(listener) => {
                 remote_bridge_log(&format!("listening on {addr}"));
-                let socket_path = socket_path.clone();
+                let socket_path = socket_path.to_path_buf();
                 handles.push(thread::spawn(move || {
                     for stream in listener.incoming() {
                         match stream {
@@ -2326,20 +2425,13 @@ pub(crate) fn run_remote_client_bridge_tcp(port: u16) -> io::Result<()> {
                     }
                 }));
             }
-            Err(err) => remote_bridge_log(&format!("bind {addr} failed: {err}")),
+            Err(err) => {
+                remote_bridge_log(&format!("bind {addr} failed: {err}"));
+                errors.push(err);
+            }
         }
     }
-
-    if handles.is_empty() {
-        remote_bridge_log("no loopback listeners bound; exiting");
-        return Err(io::Error::other(
-            "remote tcp bridge could not bind any loopback address",
-        ));
-    }
-    for handle in handles {
-        let _ = handle.join();
-    }
-    Ok(())
+    (handles, errors)
 }
 
 fn remote_tcp_bridge_connection(tcp: std::net::TcpStream, socket_path: &Path) -> io::Result<()> {
