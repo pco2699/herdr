@@ -120,6 +120,57 @@ pub(crate) fn read_limited_reader(
     }
 }
 
+/// Best-effort machine hostname, sanitized into a single lowercase path
+/// segment. Session resume state is host-specific (cwds, agent sessions, pane
+/// layout tied to this machine), so it is keyed by this to avoid sharing
+/// snapshots across hosts when the config dir is synced (e.g. dotfile sync).
+/// Falls back to `unknown-host` when the hostname can't be read.
+pub(crate) fn hostname_slug() -> String {
+    let slug: String = raw_hostname()
+        .unwrap_or_default()
+        .trim()
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    if slug.is_empty() {
+        "unknown-host".to_string()
+    } else {
+        slug
+    }
+}
+
+#[cfg(unix)]
+fn raw_hostname() -> Option<String> {
+    // SAFETY: `gethostname` writes at most `buf.len()` bytes and NUL-terminates
+    // when the name fits; we read up to the first NUL. The buffer outlives the
+    // call.
+    let mut buf = [0_u8; 256];
+    let rc = unsafe { libc::gethostname(buf.as_mut_ptr() as *mut libc::c_char, buf.len()) };
+    if rc != 0 {
+        return None;
+    }
+    let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+    (end > 0).then(|| String::from_utf8_lossy(&buf[..end]).into_owned())
+}
+
+#[cfg(windows)]
+fn raw_hostname() -> Option<String> {
+    std::env::var("COMPUTERNAME")
+        .ok()
+        .filter(|name| !name.is_empty())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn raw_hostname() -> Option<String> {
+    None
+}
+
 #[cfg(target_os = "linux")]
 mod linux;
 #[cfg(target_os = "linux")]

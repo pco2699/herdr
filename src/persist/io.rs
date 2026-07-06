@@ -7,11 +7,31 @@ use super::snapshot::{
     SessionSnapshot, SNAPSHOT_VERSION,
 };
 
+/// Resume snapshots are host-specific, so they live under a per-hostname
+/// subdirectory. This keeps a synced config dir (e.g. dotfile sync) from
+/// sharing one host's session layout/cwds/agent sessions with another.
+fn per_host_dir() -> PathBuf {
+    crate::session::data_dir()
+        .join("hosts")
+        .join(crate::platform::hostname_slug())
+}
+
 fn session_path() -> PathBuf {
-    crate::session::data_dir().join("session.json")
+    per_host_dir().join("session.json")
 }
 
 fn session_history_path() -> PathBuf {
+    per_host_dir().join("session-history.json")
+}
+
+/// Pre-per-host locations, read-only. Used as a one-time migration fallback so
+/// an existing session isn't lost the first time a host runs the per-host
+/// build; once this host writes its own snapshot the legacy files are ignored.
+fn legacy_session_path() -> PathBuf {
+    crate::session::data_dir().join("session.json")
+}
+
+fn legacy_session_history_path() -> PathBuf {
     crate::session::data_dir().join("session-history.json")
 }
 
@@ -95,6 +115,9 @@ pub fn save(snapshot: &SessionSnapshot, history: Option<&SessionHistorySnapshot>
 
 pub fn clear() {
     let path = session_path();
+    // Also drop the legacy shared file so a cleared session can't resurrect
+    // through the migration fallback on the next load.
+    let _ = clear_path(&legacy_session_path());
     if let Err(err) = clear_path(&path) {
         crate::logging::session_clear_failed(&path, &err.to_string());
         return;
@@ -105,17 +128,27 @@ pub fn clear() {
 
 pub fn clear_history() {
     let path = session_history_path();
+    let _ = clear_path(&legacy_session_history_path());
     if let Err(err) = clear_path(&path) {
         crate::logging::session_clear_failed(&path, &err.to_string());
     }
 }
 
 pub fn load() -> Option<SessionSnapshot> {
-    let path = session_path();
-    if !path.exists() {
+    load_snapshot(&session_path(), &legacy_session_path())
+}
+
+/// Read the per-host snapshot, falling back to the legacy shared path only when
+/// no per-host file exists yet (one-time migration).
+fn load_snapshot(primary: &Path, legacy: &Path) -> Option<SessionSnapshot> {
+    let path = if primary.exists() {
+        primary
+    } else if legacy.exists() {
+        legacy
+    } else {
         return None;
-    }
-    let content = match std::fs::read_to_string(&path) {
+    };
+    let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
             warn!(err = %err, "failed to read session file");
@@ -142,11 +175,18 @@ pub fn load() -> Option<SessionSnapshot> {
 }
 
 pub fn load_history() -> Option<SessionHistorySnapshot> {
-    let path = session_history_path();
-    if !path.exists() {
+    load_history_snapshot(&session_history_path(), &legacy_session_history_path())
+}
+
+fn load_history_snapshot(primary: &Path, legacy: &Path) -> Option<SessionHistorySnapshot> {
+    let path = if primary.exists() {
+        primary
+    } else if legacy.exists() {
+        legacy
+    } else {
         return None;
-    }
-    let content = match std::fs::read_to_string(&path) {
+    };
+    let content = match std::fs::read_to_string(path) {
         Ok(content) => content,
         Err(err) => {
             warn!(err = %err, "failed to read session history file");
@@ -280,6 +320,41 @@ mod tests {
         clear_path(&path).unwrap();
 
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn load_snapshot_prefers_per_host_over_legacy() {
+        let (primary, _) = temp_session_paths("prefer-per-host");
+        let legacy = temp_session_path("prefer-per-host-legacy");
+        let mut host_snap = empty_snapshot();
+        host_snap.selected = 3;
+        save_to_path(&primary, &host_snap).unwrap();
+        let mut legacy_snap = empty_snapshot();
+        legacy_snap.selected = 9;
+        save_to_path(&legacy, &legacy_snap).unwrap();
+
+        let loaded = load_snapshot(&primary, &legacy).expect("per-host snapshot loads");
+        assert_eq!(loaded.selected, 3);
+    }
+
+    #[test]
+    fn load_snapshot_falls_back_to_legacy_when_per_host_missing() {
+        let (primary, _) = temp_session_paths("fallback-missing");
+        let legacy = temp_session_path("fallback-legacy");
+        let mut legacy_snap = empty_snapshot();
+        legacy_snap.selected = 5;
+        save_to_path(&legacy, &legacy_snap).unwrap();
+
+        assert!(!primary.exists());
+        let loaded = load_snapshot(&primary, &legacy).expect("legacy snapshot loads");
+        assert_eq!(loaded.selected, 5);
+    }
+
+    #[test]
+    fn load_snapshot_none_when_neither_exists() {
+        let (primary, _) = temp_session_paths("none-exists");
+        let legacy = temp_session_path("none-exists-legacy");
+        assert!(load_snapshot(&primary, &legacy).is_none());
     }
 
     #[cfg(unix)]
